@@ -1,12 +1,14 @@
 # MinerU Skill
 
- ![GitHub Release](https://img.shields.io/github/v/release/Nebutra/MinerU-Skill?include_prereleases) ![Python](https://img.shields.io/badge/Python-3.8+-blue.svg) ![License](https://img.shields.io/badge/License-MIT-green.svg) ![API](https://img.shields.io/badge/API-MinerU-orange.svg)
+[![GitHub Release](https://img.shields.io/github/v/release/Nebutra/MinerU-Skill?include_prereleases)](https://github.com/Nebutra/MinerU-Skill/releases) [![Python](https://img.shields.io/badge/Python-3.8+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/) [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![API](https://img.shields.io/badge/API-MinerU-orange.svg)](https://mineru.net/)
 
-![GitHub stars](https://img.shields.io/github/stars/Nebutra/MinerU-Skill?style=social) ![GitHub forks](https://img.shields.io/github/forks/Nebutra/MinerU-Skill?style=social)
+[![GitHub Stars](https://img.shields.io/github/stars/Nebutra/MinerU-Skill?style=social)](https://github.com/Nebutra/MinerU-Skill/stargazers) [![GitHub Forks](https://img.shields.io/github/forks/Nebutra/MinerU-Skill?style=social)](https://github.com/Nebutra/MinerU-Skill/network/members) [![GitHub Issues](https://img.shields.io/github/issues/Nebutra/MinerU-Skill)](https://github.com/Nebutra/MinerU-Skill/issues)
 
 **An AI Skill that transforms PDF documents into clean Markdown using MinerU's VLM engine.**
 
 Perfect for knowledge workers, researchers, and anyone who needs to extract structured content from PDFs with support for mathematical formulas, tables, and images.
+
+**[中文文档](README_CN.md)** | **English**
 
 ---
 
@@ -130,14 +132,12 @@ python scripts/mineru_v2.py \
 
 ```
 output/
-├── 2024年数学一真题/
-│   ├── 2024年数学一真题.md    # Main Markdown file
-│   ├── images/                # Extracted images
+├── document-name/
+│   ├── document-name.md    # Main Markdown file
+│   ├── images/             # Extracted images
 │   │   ├── image_0_0.png
 │   │   └── ...
-│   └── content.json           # Metadata
-├── 2025年数学一真题/
-│   └── ...
+│   └── content.json        # Metadata
 └── ...
 ```
 
@@ -157,32 +157,16 @@ output/
 
 ---
 
-## 💡 Examples
+## 🎨 Supported Document Types
 
-### 考研数学真题解析
-
-```bash
-# Parse 40 exam papers with 10 workers
-python scripts/mineru_v2.py \
-  --dir ./历年真题/ \
-  --output ./解析结果/ \
-  --workers 10 \
-  --resume
-
-# Result: 40 PDFs → 40 Markdown files with formulas preserved
-```
-
-### Research Paper Extraction
-
-```bash
-# Parse academic papers
-python scripts/mineru_v2.py \
-  --dir ./papers/ \
-  --output ./extracted/ \
-  --workers 5
-
-# Result: LaTeX formulas + tables + figures all preserved
-```
+| Type | Quality | Notes |
+|------|---------|-------|
+| 📚 Academic Papers | ⭐⭐⭐⭐⭐ | LaTeX formulas preserved |
+| 📝 Exam Papers | ⭐⭐⭐⭐⭐ | Perfect for entrance exams |
+| 📊 Financial Reports | ⭐⭐⭐⭐ | Tables extracted accurately |
+| 📰 News Articles | ⭐⭐⭐⭐⭐ | Clean text extraction |
+| 📖 Textbooks | ⭐⭐⭐⭐ | Formulas + diagrams |
+| 🗎 Scanned PDFs | ⭐⭐⭐ | Works with OCR enabled |
 
 ---
 
@@ -198,99 +182,25 @@ python scripts/mineru_v2.py \
 ┌─────────────────────────────────────────────────────────────┐
 │                  MINERU SKILL ENGINE                        │
 ├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
-│  │   Scanner   │→ │  Scheduler  │→ │   Worker    │         │
-│  │ (PDF files) │  │ (asyncio)   │  │ Pool (N)    │         │
-│  └─────────────┘  └─────────────┘  └─────────────┘         │
+│  Scanner → Scheduler → Worker Pool (N workers)             │
 │                            │                                │
 │                            ▼                                │
 │  ┌─────────────────────────────────────────────────┐       │
-│  │           MINERU API CLIENT                      │       │
-│  │  • Get upload URL                                │       │
-│  │  • Upload to OSS                                 │       │
-│  │  • Poll for completion                           │       │
-│  │  • Download result                               │       │
-│  └─────────────────────────────────────────────────┘       │
-│                            │                                │
-│                            ▼                                │
-│  ┌─────────────────────────────────────────────────┐       │
-│  │           OUTPUT PROCESSOR                       │       │
-│  │  • Extract ZIP                                   │       │
-│  │  • Rename files                                  │       │
-│  │  • Organize images                               │       │
+│  │  Get Upload URL → Upload → Poll → Download      │       │
 │  └─────────────────────────────────────────────────┘       │
 └─────────────────────────────────────────────────────────────┘
                             │
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                     OUTPUT                                  │
-│     Markdown + JSON + Images → Obsidian/Notion/etc.        │
+│  OUTPUT: Markdown + JSON + Images → Obsidian/Notion/etc.   │
 └─────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 🎨 Supported Document Types
-
-| Type | Quality | Notes |
-|------|---------|-------|
-| 📚 Academic Papers | ⭐⭐⭐⭐⭐ | LaTeX formulas preserved |
-| 📝 Exam Papers | ⭐⭐⭐⭐⭐ | Perfect for 考研, 高考, etc. |
-| 📊 Financial Reports | ⭐⭐⭐⭐ | Tables extracted accurately |
-| 📰 News Articles | ⭐⭐⭐⭐⭐ | Clean text extraction |
-| 📖 Textbooks | ⭐⭐⭐⭐ | Formulas + diagrams |
-| 🗎 Scanned PDFs | ⭐⭐⭐ | Works with OCR enabled |
-
----
-
-## 🔗 Integration with AI Tools
-
-### Obsidian
-
-Output directly to your vault:
-
-```bash
-python scripts/mineru_v2.py \
-  --dir ./pdfs/ \
-  --output "~/Obsidian/MyVault/" \
-  --resume
-```
-
-### ClawHub
-
-Install as an OpenClaw skill:
-
-```bash
-# Clone to your skills directory
-git clone https://github.com/Nebutra/MinerU-Skill.git \
-  ~/openclaw-skills/mineru/
-```
-
-### MCP (Model Context Protocol)
-
-Use with any MCP-compatible AI:
-
-```json
-{
-  "mcpServers": {
-    "mineru": {
-      "command": "python",
-      "args": ["/path/to/MinerU-Skill/scripts/mineru_v2.py"]
-    }
-  }
-}
 ```
 
 ---
 
 ## 📊 Benchmarks
 
-### Test Environment
-- **Hardware:** MacBook Air M1, 16GB RAM
-- **Network:** 100Mbps home connection
-- **Files:** 10 PDFs, ~15 pages each
-
-### Results
+**Test:** 10 PDFs, ~15 pages each on MacBook Air M1
 
 | Configuration | Time | Speed |
 |--------------|------|-------|
@@ -301,9 +211,38 @@ Use with any MCP-compatible AI:
 
 ---
 
-## 🤝 Contributing
+## ⭐ Star History
 
-Contributions are welcome! Here's how to help:
+<a href="https://www.star-history.com/#Nebutra/MinerU-Skill&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=Nebutra/MinerU-Skill&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=Nebutra/MinerU-Skill&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=Nebutra/MinerU-Skill&type=Date" />
+ </picture>
+</a>
+
+---
+
+## 🔗 Integration
+
+### Obsidian
+
+```bash
+python scripts/mineru_v2.py \
+  --dir ./pdfs/ \
+  --output "~/Obsidian/MyVault/" \
+  --resume
+```
+
+### ClawHub
+
+```bash
+git clone https://github.com/Nebutra/MinerU-Skill.git ~/openclaw-skills/mineru/
+```
+
+---
+
+## 🤝 Contributing
 
 1. Fork the repository
 2. Create your feature branch (`git checkout -b feat/amazing-feature`)
