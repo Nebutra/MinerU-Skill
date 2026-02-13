@@ -1,67 +1,79 @@
-# MinerU Skill
+---
+name: mineru
+description: "Parse PDFs into clean Markdown using MinerU's VLM engine. Use when: (1) Converting PDF to Markdown, (2) Extracting text/tables/formulas from PDFs, (3) Batch processing multiple PDFs, (4) Saving parsed content to Obsidian or knowledge bases. Supports LaTeX formulas, tables, images, and async parallel processing."
+homepage: https://mineru.net
+metadata:
+  openclaw:
+    emoji: "📄"
+    requires:
+      bins: ["python3"]
+      env: ["MINERU_TOKEN"]
+    install:
+      - id: pip
+        kind: pip
+        packages: ["requests", "aiohttp"]
+        label: "Install Python dependencies (pip)"
+---
 
-AI-powered PDF to Markdown conversion using MinerU's VLM engine.
+# MinerU PDF Parser
 
-## What This Skill Does
+Parse PDF documents into Markdown with LaTeX formula preservation, table extraction, and image handling.
 
-When you ask the AI to:
-- "Parse this PDF into Markdown"
-- "Extract text from these PDFs"
-- "Convert PDF to Markdown for Obsidian"
+## Setup
 
-This skill automatically:
-1. Uploads PDFs to MinerU API
-2. Waits for VLM-powered parsing
-3. Downloads structured Markdown with LaTeX formulas preserved
-4. Extracts images and tables
-5. Organizes output for your knowledge base
-
-## Quick Start
+Get API token from https://mineru.net/user-center/api-token (free: 2000 pages/day, 200MB max):
 
 ```bash
-# Install skill
-git clone https://github.com/Nebutra/MinerU-Skill.git ~/openclaw-skills/mineru/
-
-# Set API token
-export MINERU_TOKEN="your-token-here"  # Get from https://mineru.net/user-center/api-token
+export MINERU_TOKEN="your-token-here"
 ```
 
-## Usage Examples
+## Commands
 
 ### Single File
-```
-请把这个 PDF 解析成 Markdown: ./document.pdf
+
+```bash
+python3 scripts/mineru_v2.py --file ./document.pdf --output ./output/
 ```
 
-### Batch Directory
-```
-把这 100 个 PDF 都解析了，输出到 Obsidian: ./papers/ → ~/Obsidian/MyVault/
+### Batch Directory with Resume
+
+```bash
+python3 scripts/mineru_v2.py \
+  --dir ./pdfs/ \
+  --output ./output/ \
+  --workers 10 \
+  --resume
 ```
 
 ### Direct to Obsidian
-```
-解析这些试卷，直接保存到我的考研 Vault 里
-```
-
-## Scripts
-
-| Script | Use Case |
-|--------|----------|
-| `mineru_v2.py` | Default - async parallel (recommended) |
-| `mineru_async.py` | High concurrency (15+ workers) |
-| `mineru_stable.py` | Robust sequential processing |
-
-## CLI Reference
 
 ```bash
-python scripts/mineru_v2.py \
-  --dir <pdf-directory> \
-  --output <output-path> \
-  --workers <concurrency> \
-  --resume  # Skip processed files
+python3 scripts/mineru_v2.py \
+  --dir ./pdfs/ \
+  --output "~/Library/Mobile Documents/com~apple~CloudDocs/Obsidian/VaultName/" \
+  --resume
 ```
 
-## Output Structure
+## CLI Options
+
+```
+--dir PATH        Input directory of PDFs
+--file PATH       Single PDF file  
+--output PATH     Output directory (default: ./output/)
+--workers N       Concurrent workers (default: 5, max: 15)
+--resume          Skip already processed files
+--timeout SEC     Per-file timeout (default: 600)
+```
+
+## Script Selection
+
+| Script | Use When |
+|--------|----------|
+| `mineru_v2.py` | Default - async parallel |
+| `mineru_async.py` | Fast network, need 15+ workers |
+| `mineru_stable.py` | Unstable network, sequential |
+
+## Output
 
 ```
 output/
@@ -71,23 +83,28 @@ output/
 │   └── content.json        # Metadata
 ```
 
-## Features
+## Supported Documents
 
-- 🔢 LaTeX formula preservation
-- 📊 Table extraction
-- 🖼️ Image extraction
-- ⚡ Parallel processing (up to 15x)
-- 🔄 Auto resume
-- 📁 Direct to Obsidian output
+- Academic papers (LaTeX formulas)
+- Exam papers (考研, 高考)
+- Financial reports (tables)
+- Textbooks (formulas + diagrams)
+- Scanned PDFs (enable OCR)
 
-## Requirements
+## Performance
 
-- Python 3.8+
-- `requests`, `aiohttp`
-- MinerU API token (free: 2000 pages/day)
+| Workers | Speed |
+|---------|-------|
+| 1 (sequential) | 1.2 files/min |
+| 5 | 3.1 files/min |
+| 15 | 5.6 files/min |
 
-## Get API Token
+## Error Handling
 
-1. Visit https://mineru.net/user-center/api-token
-2. Create free token
-3. Set: `export MINERU_TOKEN="your-token"`
+- 3x auto-retry with exponential backoff
+- Use `--resume` to skip completed files
+- Check logs for failed files
+
+## API Reference
+
+For detailed API documentation, see [references/api_reference.md](references/api_reference.md).

@@ -6,8 +6,6 @@
 
 **一款将 PDF 文档转换为简洁 Markdown 的 AI Skill，基于 MinerU VLM 引擎。**
 
-告诉你的 AI 助手：*"把这些 PDF 解析成 Markdown"* —— 它会自动处理一切。
-
 **中文文档** | **[English](README.md)**
 
 ---

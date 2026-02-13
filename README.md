@@ -6,8 +6,6 @@
 
 **An AI Skill that transforms PDF documents into clean Markdown using MinerU's VLM engine.**
 
-Tell your AI assistant: *"Parse these PDFs into Markdown"* and it handles everything.
-
 **[中文文档](README_CN.md)** | **English**
 
 ---
