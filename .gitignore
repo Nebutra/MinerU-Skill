@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.venv/
+output/
+*.zip
+.DS_Store
