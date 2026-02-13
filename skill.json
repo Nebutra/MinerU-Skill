@@ -1,0 +1,64 @@
+{
+  "name": "mineru",
+  "version": "2.0.0",
+  "description": "Parse PDFs into Markdown using MinerU VLM engine with async parallel processing",
+  "author": "Nebutra",
+  "license": "MIT",
+  "repository": "https://github.com/Nebutra/MinerU-Skill",
+  "keywords": [
+    "pdf",
+    "markdown",
+    "parser",
+    "ocr",
+    "latex",
+    "formula",
+    "table",
+    "obsidian",
+    "document-processing"
+  ],
+  "categories": ["document", "knowledge-management", "productivity"],
+  "scripts": {
+    "parse": "scripts/mineru_v2.py",
+    "parse-async": "scripts/mineru_async.py",
+    "parse-stable": "scripts/mineru_stable.py"
+  },
+  "requirements": {
+    "python": ">=3.8",
+    "packages": ["requests", "aiohttp"]
+  },
+  "env": {
+    "MINERU_TOKEN": {
+      "description": "MinerU API Token",
+      "required": true,
+      "link": "https://mineru.net/user-center/api-token"
+    }
+  },
+  "examples": [
+    {
+      "prompt": "Parse this PDF into Markdown: ./document.pdf",
+      "description": "Single file parsing"
+    },
+    {
+      "prompt": "Convert all PDFs in ./papers/ to Markdown, output to ~/Obsidian/MyVault/",
+      "description": "Batch processing"
+    },
+    {
+      "prompt": "解析这些考研真题 PDF，保存到 Obsidian",
+      "description": "Chinese example - Parse exam papers to Obsidian"
+    }
+  ],
+  "capabilities": [
+    "PDF to Markdown conversion",
+    "LaTeX formula extraction",
+    "Table extraction",
+    "Image extraction",
+    "Batch processing",
+    "Direct Obsidian output",
+    "Auto resume on failure"
+  ],
+  "limits": {
+    "free_tier": "2000 pages/day",
+    "max_file_size": "200MB",
+    "max_pages": "600"
+  }
+}

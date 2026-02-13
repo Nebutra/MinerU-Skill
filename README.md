@@ -1,130 +1,137 @@
 # MinerU Skill
 
-[![GitHub Release](https://img.shields.io/github/v/release/Nebutra/MinerU-Skill?include_prereleases)](https://github.com/Nebutra/MinerU-Skill/releases) [![Python](https://img.shields.io/badge/Python-3.8+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/) [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![API](https://img.shields.io/badge/API-MinerU-orange.svg)](https://mineru.net/)
+[![GitHub Release](https://img.shields.io/github/v/release/Nebutra/MinerU-Skill?include_prereleases)](https://github.com/Nebutra/MinerU-Skill/releases) [![Python](https://img.shields.io/badge/Python-3.8+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/) [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![ClawHub](https://img.shields.io/badge/ClawHub-Available-purple.svg)](https://clawhub.com)
 
-[![GitHub Stars](https://img.shields.io/github/stars/Nebutra/MinerU-Skill?style=social)](https://github.com/Nebutra/MinerU-Skill/stargazers) [![GitHub Forks](https://img.shields.io/github/forks/Nebutra/MinerU-Skill?style=social)](https://github.com/Nebutra/MinerU-Skill/network/members) [![GitHub Issues](https://img.shields.io/github/issues/Nebutra/MinerU-Skill)](https://github.com/Nebutra/MinerU-Skill/issues)
+[![GitHub Stars](https://img.shields.io/github/stars/Nebutra/MinerU-Skill?style=social)](https://github.com/Nebutra/MinerU-Skill/stargazers) [![GitHub Forks](https://img.shields.io/github/forks/Nebutra/MinerU-Skill?style=social)](https://github.com/Nebutra/MinerU-Skill/network/members)
 
 **An AI Skill that transforms PDF documents into clean Markdown using MinerU's VLM engine.**
 
-Perfect for knowledge workers, researchers, and anyone who needs to extract structured content from PDFs with support for mathematical formulas, tables, and images.
+Tell your AI assistant: *"Parse these PDFs into Markdown"* and it handles everything.
 
 **[中文文档](README_CN.md)** | **English**
 
 ---
 
-## ⚡ What's New in v2.0
+## 🤖 What is a Skill?
 
-### 🚀 High-Performance Async Engine
+A **Skill** is an AI capability package that extends your AI assistant's abilities. When you ask the AI to do something, it automatically:
 
-| Feature | Before | After |
-|---------|--------|-------|
-| Concurrency Model | ThreadPoolExecutor | **asyncio + aiohttp** |
-| HTTP Library | requests (blocking) | **aiohttp (async)** |
-| Connection Management | New per request | **Connection Pool** |
-| Max Concurrency | 5-10 workers | **15+ workers** |
-| Auto-Retry | Manual | **3x with exponential backoff** |
+1. **Recognizes** the task from your natural language
+2. **Activates** the appropriate skill
+3. **Executes** the task using the skill's tools
+4. **Delivers** results back to you
 
-### 📊 Performance Comparison
+### Example Conversation
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  THROUGHPUT: 10 PDF files (~15 pages each)                   │
-├──────────────────────────────────────────────────────────────┤
-│                                                              │
-│  v1.0 (Sequential):    ████████████████████  8.5 minutes    │
-│                                                              │
-│  v2.0 (Async 5):       ████████              3.2 minutes    │
-│                                                              │
-│  v2.0 (Async 15):      ████                  1.8 minutes    │
-│                                                              │
-└──────────────────────────────────────────────────────────────┘
+You: 解析这些考研数学真题 PDF 到我的 Obsidian
+
+AI: 📚 发现 40 个 PDF 文件
+    ⏳ 开始并行解析 (5 workers)...
+    ✅ 1993年考研数学（一）真题 → Markdown
+    ✅ 1994年考研数学（一）真题 → Markdown
+    ...
+    ✅ 完成！已保存到 Obsidian/考研/数学一/
 ```
 
 ---
 
-## ✨ Features
+## 🚀 Install as Skill
 
-| Category | Details |
-|----------|---------|
-| 📄 **PDF Input** | Local files, URLs, batch directories |
-| 📝 **Output Format** | Clean Markdown + JSON metadata + Extracted images |
-| 🔢 **Math Support** | LaTeX formulas preserved |
-| 📊 **Table Extraction** | Markdown tables with structure |
-| 🖼️ **Image Extraction** | Auto-saved to `images/` folder |
-| ⚡ **Async Processing** | Up to 15x parallel uploads |
-| 🔄 **Auto Resume** | Skip already processed files |
-| 🛡️ **Error Handling** | 3x retry with exponential backoff |
-| 📁 **Direct to Obsidian** | Output to your vault automatically |
-
----
-
-## 🚀 Quick Start
-
-### Installation
+### OpenClaw
 
 ```bash
-# Clone the repository
-git clone https://github.com/Nebutra/MinerU-Skill.git
-cd MinerU-Skill
+# Clone to your skills directory
+git clone https://github.com/Nebutra/MinerU-Skill.git ~/openclaw-skills/mineru/
 
-# Install dependencies
-pip install requests aiohttp
+# Set API token
+export MINERU_TOKEN="your-token-here"  # Get from https://mineru.net/user-center/api-token
 ```
 
-### Get Your API Token
-
-1. Visit [MinerU](https://mineru.net/user-center/api-token)
-2. Create a free API token
-3. Set environment variable:
+### ClawHub
 
 ```bash
-export MINERU_TOKEN="your-token-here"
+# Install via clawhub CLI
+clawhub install mineru
 ```
 
-**Free Tier:** 2000 pages/day, 200MB max file size
+### Claude Code / Cursor / Windsurf
+
+```bash
+# Clone to AI skills folder
+git clone https://github.com/Nebutra/MinerU-Skill.git ~/.claude/skills/mineru/
+```
 
 ---
 
-## 📖 Usage
+## 💬 Usage Examples
 
 ### Single File
 
-```bash
-python scripts/mineru_v2.py \
-  --file ./document.pdf \
-  --output ./output/
+```
+把 ./document.pdf 解析成 Markdown
 ```
 
 ### Batch Directory
 
-```bash
-python scripts/mineru_v2.py \
-  --dir ./pdfs/ \
-  --output ./output/ \
-  --workers 10 \
-  --resume
+```
+解析 ./papers/ 目录下的所有 PDF，输出到 ./output/
 ```
 
 ### Direct to Obsidian
 
-```bash
-python scripts/mineru_v2.py \
-  --dir ./pdfs/ \
-  --output "~/Library/Mobile Documents/com~apple~CloudDocs/Obsidian/MyVault/Notes/" \
-  --workers 5 \
-  --resume
+```
+把这些 PDF 解析后直接保存到我的 Obsidian Vault
+```
+
+### Chinese Example
+
+```
+解析 1987-2025 年考研数学真题，保存到 Obsidian/考研/数学一/
+用 10 个并发，跳过已处理的文件
 ```
 
 ---
 
-## 🎯 Available Scripts
+## ⚡ Features
 
-| Script | Description | Best For |
-|--------|-------------|----------|
-| `mineru_v2.py` | **Recommended** - Async parallel processing | Most use cases |
-| `mineru_async.py` | Ultra-high concurrency (15+ workers) | Fast networks |
-| `mineru_stable.py` | Sequential with robust retry | Unstable networks |
-| `mineru_api.py` | Full-featured with all options | Advanced users |
+| Feature | Description |
+|---------|-------------|
+| 📄 **PDF Input** | Local files, URLs, batch directories |
+| 📝 **Output** | Markdown + JSON metadata + Images |
+| 🔢 **LaTeX** | Math formulas preserved |
+| 📊 **Tables** | Structure extraction |
+| 🖼️ **Images** | Auto-extracted to `images/` |
+| ⚡ **Async** | 15x parallel uploads |
+| 🔄 **Resume** | Skip processed files |
+| 📁 **Obsidian** | Direct vault output |
+
+---
+
+## 🛠️ CLI Reference
+
+You can also use directly via CLI:
+
+```bash
+# Single file
+python scripts/mineru_v2.py --file ./doc.pdf --output ./output/
+
+# Batch with resume
+python scripts/mineru_v2.py \
+  --dir ./pdfs/ \
+  --output ~/Obsidian/MyVault/ \
+  --workers 10 \
+  --resume
+```
+
+| Option | Description |
+|--------|-------------|
+| `--dir PATH` | Input directory |
+| `--file PATH` | Single file |
+| `--output PATH` | Output directory |
+| `--workers N` | Concurrency (default: 5) |
+| `--resume` | Skip processed files |
+| `--token TOKEN` | API token |
 
 ---
 
@@ -133,7 +140,7 @@ python scripts/mineru_v2.py \
 ```
 output/
 ├── document-name/
-│   ├── document-name.md    # Main Markdown file
+│   ├── document-name.md    # Main Markdown
 │   ├── images/             # Extracted images
 │   │   ├── image_0_0.png
 │   │   └── ...
@@ -143,71 +150,29 @@ output/
 
 ---
 
-## 🔧 CLI Options
+## 📊 Performance
 
-```
---dir PATH        Input directory of PDF files
---file PATH       Single PDF file
---output PATH     Output directory (default: ./output/)
---token TOKEN     MinerU API token (or set MINERU_TOKEN env)
---workers N       Concurrent workers (default: 5)
---resume          Skip already processed files
---timeout SEC     Timeout per file (default: 600)
-```
-
----
-
-## 🎨 Supported Document Types
-
-| Type | Quality | Notes |
-|------|---------|-------|
-| 📚 Academic Papers | ⭐⭐⭐⭐⭐ | LaTeX formulas preserved |
-| 📝 Exam Papers | ⭐⭐⭐⭐⭐ | Perfect for entrance exams |
-| 📊 Financial Reports | ⭐⭐⭐⭐ | Tables extracted accurately |
-| 📰 News Articles | ⭐⭐⭐⭐⭐ | Clean text extraction |
-| 📖 Textbooks | ⭐⭐⭐⭐ | Formulas + diagrams |
-| 🗎 Scanned PDFs | ⭐⭐⭐ | Works with OCR enabled |
-
----
-
-## 🏗️ Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     USER REQUEST                            │
-│         "Parse 100 PDFs from ./docs/"                       │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│                  MINERU SKILL ENGINE                        │
-├─────────────────────────────────────────────────────────────┤
-│  Scanner → Scheduler → Worker Pool (N workers)             │
-│                            │                                │
-│                            ▼                                │
-│  ┌─────────────────────────────────────────────────┐       │
-│  │  Get Upload URL → Upload → Poll → Download      │       │
-│  └─────────────────────────────────────────────────┘       │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│  OUTPUT: Markdown + JSON + Images → Obsidian/Notion/etc.   │
-└─────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 📊 Benchmarks
-
-**Test:** 10 PDFs, ~15 pages each on MacBook Air M1
+**Test:** 10 PDFs, ~15 pages each (MacBook Air M1)
 
 | Configuration | Time | Speed |
 |--------------|------|-------|
-| Sequential (1 worker) | 8.5 min | 1.2 files/min |
-| Parallel (5 workers) | 3.2 min | 3.1 files/min |
-| Async (10 workers) | 2.1 min | 4.8 files/min |
+| Sequential | 8.5 min | 1.2 files/min |
+| Async (5 workers) | 3.2 min | 3.1 files/min |
 | Async (15 workers) | 1.8 min | 5.6 files/min |
+
+---
+
+## 🔑 Get API Token
+
+1. Visit [MinerU](https://mineru.net/user-center/api-token)
+2. Create free API token
+3. Set environment:
+
+```bash
+export MINERU_TOKEN="your-token-here"
+```
+
+**Free Tier:** 2000 pages/day, 200MB max file
 
 ---
 
@@ -223,58 +188,63 @@ output/
 
 ---
 
-## 🔗 Integration
+## 🏗️ Skill Architecture
 
-### Obsidian
-
-```bash
-python scripts/mineru_v2.py \
-  --dir ./pdfs/ \
-  --output "~/Obsidian/MyVault/" \
-  --resume
 ```
-
-### ClawHub
-
-```bash
-git clone https://github.com/Nebutra/MinerU-Skill.git ~/openclaw-skills/mineru/
+┌─────────────────────────────────────────────────────────────┐
+│                    USER REQUEST                             │
+│      "Parse these PDFs to Markdown"                         │
+└─────────────────────────────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    AI ASSISTANT                             │
+│  • Recognizes PDF parsing task                             │
+│  • Activates MinerU skill                                  │
+│  • Reads SKILL.md for instructions                         │
+└─────────────────────────────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│                  MINERU SKILL ENGINE                        │
+│  Scanner ──► Scheduler ──► Worker Pool (N workers)         │
+│                           │                                 │
+│                           ▼                                 │
+│  API: Get URL ──► Upload ──► Poll ──► Download             │
+└─────────────────────────────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│                      OUTPUT                                 │
+│     Markdown + JSON + Images ──► Obsidian/Files            │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## 🤝 Contributing
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feat/amazing-feature`)
-3. Commit your changes (`git commit -m 'feat: add amazing feature'`)
-4. Push to the branch (`git push origin feat/amazing-feature`)
-5. Open a Pull Request
+1. Fork → Branch → Commit → Push → PR
 
 ---
 
 ## 📝 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT License - see [LICENSE](LICENSE)
 
 ---
 
 ## 🙏 Acknowledgments
 
-- [MinerU](https://mineru.net/) - Powerful PDF parsing API
-- [OpenClaw](https://openclaw.ai/) - AI assistant framework
-
----
-
-## 📮 Support
-
-- **Issues:** [GitHub Issues](https://github.com/Nebutra/MinerU-Skill/issues)
-- **Discussions:** [GitHub Discussions](https://github.com/Nebutra/MinerU-Skill/discussions)
+- [MinerU](https://mineru.net/) - PDF parsing API
+- [OpenClaw](https://openclaw.ai/) - AI skill framework
+- [ClawHub](https://clawhub.com) - Skill marketplace
 
 ---
 
 <div align="center">
 
-**If you find this useful, consider giving it a ⭐!**
+**If this skill helps you, give it a ⭐!**
 
 Made with ❤️ by [Nebutra](https://github.com/Nebutra)
 
