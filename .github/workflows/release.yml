@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Validate Skill
+        run: |
+          python3 << 'EOF'
+          import re, yaml
+          
+          with open('SKILL.md', 'r') as f:
+              content = f.read()
+          
+          match = re.match(r'^---\n(.*?)\n---', content, re.DOTALL)
+          fm = yaml.safe_load(match.group(1))
+          
+          print(f"Skill: {fm['name']}")
+          print(f"Version: ${{ github.ref_name }}")
+          EOF
+      
+      - name: Create skill package
+        run: |
+          mkdir -p dist
+          zip -r dist/mineru-skill.zip \
+            SKILL.md \
+            scripts/*.py \
+            references/ \
+            LICENSE \
+            README.md \
+            README_CN.md
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mineru-skill-release
+          path: dist/
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: mineru-skill-release
+          path: dist/
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            ## MinerU Skill ${{ github.ref_name }}
+            
+            ### Installation
+            
+            ```bash
+            # Clone to your skills directory
+            git clone https://github.com/Nebutra/MinerU-Skill.git ~/openclaw-skills/mineru/
+            
+            # Or download the release package
+            unzip mineru-skill.zip -d ~/openclaw-skills/mineru/
+            ```
+            
+            ### Quick Start
+            
+            ```bash
+            export MINERU_TOKEN="your-token"
+            python3 scripts/mineru_v2.py --dir ./pdfs/ --output ./output/ --resume
+            ```
+            
+            ---
+            
+            [📖 Documentation](https://github.com/Nebutra/MinerU-Skill#readme)
