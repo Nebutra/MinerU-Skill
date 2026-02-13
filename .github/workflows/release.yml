@@ -47,7 +47,7 @@ jobs:
             README_CN.md
       
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: mineru-skill-release
           path: dist/
