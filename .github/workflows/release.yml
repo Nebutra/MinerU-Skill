@@ -20,6 +20,9 @@ jobs:
         with:
           python-version: '3.11'
       
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      
       - name: Validate Skill
         run: |
           python3 << 'EOF'
@@ -28,7 +31,9 @@ jobs:
           with open('SKILL.md', 'r') as f:
               content = f.read()
           
-          match = re.match(r'^---\n(.*?)\n---', content, re.DOTALL)
+          match = re.match(r'^---
+(.*?)
+---', content, re.DOTALL)
           fm = yaml.safe_load(match.group(1))
           
           print(f"Skill: {fm['name']}")
