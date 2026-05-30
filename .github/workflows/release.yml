@@ -86,8 +86,11 @@ jobs:
             ### Quick Start
             
             ```bash
-            export MINERU_TOKEN="your-token"
-            python3 scripts/mineru_v2.py --dir ./pdfs/ --output ./output/ --resume
+            # Zero-config (no token needed)
+            python3 scripts/mineru.py ./pdfs/ --output ./output/ --resume
+
+            # Optional: unlock the Standard API for large files / batch / extra formats
+            export MINERU_TOKEN="your-token"   # https://mineru.net/apiManage/token
             ```
             
             ---

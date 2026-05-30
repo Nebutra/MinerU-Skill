@@ -1,110 +1,118 @@
 ---
 name: mineru
-description: "Parse PDFs into clean Markdown using MinerU's VLM engine. Use when: (1) Converting PDF to Markdown, (2) Extracting text/tables/formulas from PDFs, (3) Batch processing multiple PDFs, (4) Saving parsed content to Obsidian or knowledge bases. Supports LaTeX formulas, tables, images, and async parallel processing."
+description: "An AI-Native skill for parsing PDF / Office / image files into clean Markdown with MinerU — a fast, zero-config document parser for AI agents. Works with NO token via the lightweight Agent API and auto-upgrades to the Standard API (token) for large files, batches, and DOCX/HTML/LaTeX export. Use when: (1) Converting PDF/Word/PPT/Excel/image to Markdown, (2) Extracting text, tables, formulas, or running OCR on scanned docs, (3) Batch-parsing a folder in parallel, (4) Piping parsed Markdown straight back to an agent or into Obsidian."
 homepage: https://mineru.net
 metadata:
   openclaw:
     emoji: "📄"
     requires:
       bins: ["python3"]
-      env: ["MINERU_TOKEN"]
-    install:
-      - id: pip
-        kind: pip
-        packages: ["requests", "aiohttp"]
-        label: "Install Python dependencies (pip)"
 ---
 
 # MinerU PDF Parser
 
-Parse PDF documents into Markdown with LaTeX formula preservation, table extraction, and image handling.
+Parse PDF, Office (Word/PPT/Excel), and image files into clean Markdown — with
+LaTeX formulas, tables, images, and OCR. One zero-dependency script, two backends,
+automatic routing.
 
-## Setup
-
-Get API token from https://mineru.net/user-center/api-token (free: 2000 pages/day, 200MB max):
-
-```bash
-export MINERU_TOKEN="your-token-here"
-```
-
-## Commands
-
-### Single File
+## Zero-config quick start (no token, no install)
 
 ```bash
-python3 scripts/mineru_v2.py --file ./document.pdf --output ./output/
+# Parse a local file or URL — the Agent API needs no login
+python3 scripts/mineru.py paper.pdf
+
+# Pipe the Markdown straight back to an agent
+python3 scripts/mineru.py paper.pdf --stdout
+
+# Machine-readable status for tool pipelines
+python3 scripts/mineru.py paper.pdf --json
 ```
 
-### Batch Directory with Resume
+No `pip install`, no API key. The free **Agent API** handles files ≤ 10 MB / ≤ 20 pages.
+
+## Power mode (token) — large files, batches, extra formats
 
 ```bash
-python3 scripts/mineru_v2.py \
-  --dir ./pdfs/ \
-  --output ./output/ \
-  --workers 10 \
-  --resume
+export MINERU_TOKEN="..."          # https://mineru.net/apiManage/token
+
+# Parallel batch a directory, resume on re-run
+python3 scripts/mineru.py ./pdfs/ --output ./out/ --workers 8 --resume
+
+# Export DOCX/HTML/LaTeX alongside Markdown (auto-routes to the Standard API)
+python3 scripts/mineru.py report.pdf --format docx --format latex
 ```
 
-### Direct to Obsidian
+When a token is set, the tool **auto-routes**: small single files still use the
+free Agent API; anything large (> 10 MB / > 20 pages), batched, or needing extra
+export formats uses the **Standard API** (≤ 200 MB / ≤ 200 pages). If the Agent
+API hits a size/page limit, it auto-escalates to the Standard API.
+
+## Supported modalities
+
+| Modality | Extensions | OCR |
+|----------|-----------|-----|
+| PDF | `.pdf` | `--ocr` |
+| Image | `.png .jpg .jpeg .jp2 .webp .gif .bmp` | built-in |
+| Word | `.doc .docx` | — |
+| Slides | `.ppt .pptx` | — |
+| Sheet | `.xls .xlsx` | — |
+| HTML | `.html` (Standard API, `MinerU-HTML` model) | — |
+
+## Common options
+
+```
+INPUT...          One or more files, a directory, or a URL
+--output, -o      Output directory (default: ./output)
+--api             auto | agent | standard   (default: auto)
+--model           pipeline | vlm | MinerU-HTML  (default: vlm)
+--format          docx | html | latex  (repeatable; forces Standard API)
+--lang            OCR/document language (default: ch)
+--ocr             Enable OCR for scanned documents
+--pages           Page range, e.g. "1-10" or "2,4-6"
+--workers, -w     Concurrent inputs (default: 4)
+--resume          Skip inputs already parsed
+--stdout          Print Markdown to stdout
+--json            Print machine-readable status to stdout
+--to SINK         Deliver into a content tool (repeatable); --list-sinks to enumerate
+--obsidian PATH   Shortcut for --to obsidian with this vault
+```
+
+## Deliver into your tools (`--to`)
+
+Parse once and push the Markdown into content tools via each one's official path:
 
 ```bash
-python3 scripts/mineru_v2.py \
-  --dir ./pdfs/ \
-  --output "~/Library/Mobile Documents/com~apple~CloudDocs/Obsidian/VaultName/" \
-  --resume
+python3 scripts/mineru.py paper.pdf --to obsidian --to notion --to feishu
 ```
 
-## CLI Options
-
-```
---dir PATH        Input directory of PDFs
---file PATH       Single PDF file  
---output PATH     Output directory (default: ./output/)
---workers N       Concurrent workers (default: 5, max: 15)
---resume          Skip already processed files
---timeout SEC     Per-file timeout (default: 600)
-```
-
-## Script Selection
-
-| Script | Use When |
-|--------|----------|
-| `mineru_v2.py` | Default - async parallel |
-| `mineru_async.py` | Fast network, need 15+ workers |
-| `mineru_stable.py` | Unstable network, sequential |
+Targets: `obsidian` `logseq` `siyuan` `notion` `linear` `yuque` `coda` `slack`
+`feishu` `confluence` `onenote` `ticktick` `dingtalk` `airtable` `wecom`. Each
+reads its config from env vars (run `--list-sinks`). Per-target auth, fidelity,
+and image notes: [references/integrations.md](references/integrations.md).
 
 ## Output
 
 ```
 output/
-├── document-name/
-│   ├── document-name.md    # Main Markdown
-│   ├── images/             # Extracted images
-│   └── content.json        # Metadata
+└── document-name/
+    ├── document-name.md    # clean Markdown
+    └── images/             # extracted figures (Standard API)
 ```
 
-## Supported Documents
+## Performance (real, measured)
 
-- Academic papers (LaTeX formulas)
-- Exam papers (考研, 高考)
-- Financial reports (tables)
-- Textbooks (formulas + diagrams)
-- Scanned PDFs (enable OCR)
+End-to-end latency for the official demo PDF via the free Agent API:
+**cold ≈ 14 s · warm ≈ 13 s** (submit → poll → download). Batches scale with
+`--workers`. Numbers come from the no-mock live benchmark in `tests/test_live.py`.
 
-## Performance
+## Testing
 
-| Workers | Speed |
-|---------|-------|
-| 1 (sequential) | 1.2 files/min |
-| 5 | 3.1 files/min |
-| 15 | 5.6 files/min |
-
-## Error Handling
-
-- 3x auto-retry with exponential backoff
-- Use `--resume` to skip completed files
-- Check logs for failed files
+```bash
+python3 -m pytest                      # fast unit suite (offline)
+MINERU_LIVE=1 python3 -m pytest -m live -s   # real API + benchmark (no mocks)
+```
 
 ## API Reference
 
-For detailed API documentation, see [references/api_reference.md](references/api_reference.md).
+See [references/api_reference.md](references/api_reference.md). Official docs:
+https://mineru.net/apiManage/docs · Token: https://mineru.net/apiManage/token

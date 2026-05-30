@@ -1,0 +1,801 @@
+#!/usr/bin/env python3
+"""MinerU CLI — parse PDF / Office / image files into clean Markdown.
+
+Zero-dependency (Python standard library only) and AI-Native. The tool picks the
+right MinerU backend automatically:
+
+  * no token              -> Agent API   (free, no login; <=10 MB, <=20 pages)
+  * token + small file    -> Agent API   (fast & free, auto-escalates on limits)
+  * token + big/batch/fmt -> Standard v4 (<=200 MB, <=200 pages, docx/html/latex)
+
+Token:  https://mineru.net/apiManage/token
+Docs:   https://mineru.net/apiManage/docs
+
+Examples
+--------
+    # Zero-config single file (no token needed)
+    python3 mineru.py paper.pdf
+
+    # Pipe the Markdown straight back to an agent
+    python3 mineru.py paper.pdf --stdout
+
+    # Batch a directory with a token (Standard API, parallel)
+    export MINERU_TOKEN=...
+    python3 mineru.py ./pdfs/ --output ./out/ --workers 8 --resume
+
+    # Parse a remote URL and also export DOCX
+    python3 mineru.py https://example.com/doc.pdf --format docx
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
+from io import BytesIO
+from pathlib import Path
+from typing import Optional
+
+__version__ = "3.0.0"
+
+# --------------------------------------------------------------------------- #
+# Constants (kept in sync with https://mineru.net/apiManage/docs)
+# --------------------------------------------------------------------------- #
+STANDARD_API = "https://mineru.net/api/v4"
+AGENT_API = "https://mineru.net/api/v1/agent"
+
+AGENT_MAX_BYTES = 10 * 1024 * 1024      # 10 MB
+AGENT_MAX_PAGES = 20
+STANDARD_MAX_BYTES = 200 * 1024 * 1024  # 200 MB
+STANDARD_MAX_PAGES = 200
+BATCH_MAX_FILES = 50                    # per Standard batch request
+FREE_DAILY_PAGES = 1000                 # highest-priority quota / day
+
+USER_AGENT = f"MinerU-Skill/{__version__}"
+
+# Input modalities MinerU understands, grouped so the CLI can report what it sees
+# and so support stays single-sourced. The Agent API additionally rejects HTML.
+MODALITY_SUFFIXES = {
+    "pdf": {".pdf"},
+    "image": {".png", ".jpg", ".jpeg", ".jp2", ".webp", ".gif", ".bmp"},
+    "word": {".doc", ".docx"},
+    "slides": {".ppt", ".pptx"},
+    "sheet": {".xls", ".xlsx"},
+    "html": {".html"},
+}
+SUPPORTED_SUFFIXES = {suf for group in MODALITY_SUFFIXES.values() for suf in group}
+
+# Error code -> actionable hint. Mirrors the official docs error tables.
+ERROR_HINTS = {
+    "A0202": "Invalid token — check it or create a new one at https://mineru.net/apiManage/token",
+    "A0211": "Token expired — create a new one at https://mineru.net/apiManage/token",
+    -500: "Parameter error — check request parameters and Content-Type",
+    -10001: "Service error — please retry later",
+    -10002: "Invalid request parameters",
+    -60001: "Failed to generate upload URL — retry later",
+    -60002: "Unsupported file format — use a correct file extension",
+    -60003: "Failed to read file — the file may be corrupted",
+    -60004: "Empty file — upload a valid file",
+    -60005: "File too large — Standard API max is 200 MB",
+    -60006: "Too many pages — Standard API max is 200 pages, split the file",
+    -60007: "Model service temporarily unavailable — retry later",
+    -60008: "File read timeout — ensure the URL is reachable",
+    -60009: "Task queue is full — retry later",
+    -60010: "Parse failed — retry later",
+    -60011: "Failed to get a valid file — ensure the file was uploaded",
+    -60012: "Task not found — check the task_id",
+    -60013: "No permission to access this task",
+    -60014: "Cannot delete a running task",
+    -60015: "File conversion failed — try converting to PDF first",
+    -60016: "Format conversion failed — try another export format",
+    -60017: "Retry limit reached — try again after a model upgrade",
+    -60018: "Daily parse quota reached — try again tomorrow",
+    -60019: "Insufficient HTML parse quota — try again tomorrow",
+    -60020: "File split failed — retry later",
+    -60021: "Failed to read page count — retry later",
+    -60022: "Web page read failed — possibly rate-limited, retry later",
+    # Agent (lightweight) API specific codes
+    -30001: "File exceeds Agent API 10 MB limit — set MINERU_TOKEN to use the Standard API",
+    -30002: "Agent API does not support this file type — use PDF/image/Doc/PPT/Excel",
+    -30003: "Pages exceed Agent API 20-page limit — set MINERU_TOKEN or pass --pages",
+    -30004: "Invalid request parameters — check required fields",
+}
+
+# Agent-API error codes that a Standard-API retry can recover from.
+AGENT_ESCALATABLE = {-30001, -30003}
+
+# Terminal/transient task states (Standard + Agent share most of these).
+STATE_DONE = "done"
+STATE_FAILED = "failed"
+ACTIVE_STATES = {"pending", "running", "converting", "uploading", "waiting-file"}
+
+
+class MinerUError(Exception):
+    """Raised when the API returns a non-zero ``code`` or an unrecoverable error."""
+
+    def __init__(self, message: str, code=None):
+        super().__init__(message)
+        self.code = code
+
+
+# --------------------------------------------------------------------------- #
+# Options / results
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class ParseOptions:
+    model: str = "vlm"
+    language: str = "ch"
+    is_ocr: bool = False
+    enable_formula: bool = True
+    enable_table: bool = True
+    page_ranges: Optional[str] = None
+    extra_formats: tuple = ()
+
+
+@dataclass
+class ParseResult:
+    name: str
+    source: str
+    api: str = "agent"
+    modality: str = "unknown"
+    state: str = STATE_FAILED
+    output_dir: Optional[str] = None
+    markdown_path: Optional[str] = None
+    markdown: Optional[str] = None
+    task_id: Optional[str] = None
+    elapsed: Optional[float] = None
+    error: Optional[str] = None
+    sinks: list = field(default_factory=list)
+
+    def to_status(self) -> dict:
+        """Machine-readable status used by ``--json`` (omits the full markdown body)."""
+        return {
+            "name": self.name,
+            "source": self.source,
+            "api": self.api,
+            "modality": self.modality,
+            "state": self.state,
+            "output_dir": self.output_dir,
+            "markdown_path": self.markdown_path,
+            "task_id": self.task_id,
+            "elapsed": self.elapsed,
+            "error": self.error,
+            "sinks": self.sinks,
+        }
+
+
+# --------------------------------------------------------------------------- #
+# Pure helpers (heavily unit-tested)
+# --------------------------------------------------------------------------- #
+def is_url(value: str) -> bool:
+    return value.startswith("http://") or value.startswith("https://")
+
+
+def safe_stem(source: str) -> str:
+    """Derive a clean output folder name from a file path or URL."""
+    tail = source.split("?", 1)[0].rstrip("/")
+    name = tail.rsplit("/", 1)[-1] if is_url(source) else Path(source).name
+    stem = Path(name).stem or "document"
+    return stem
+
+
+def safe_data_id(stem: str) -> str:
+    """data_id allows [A-Za-z0-9_.-], <=128 chars."""
+    cleaned = "".join(c if (c.isalnum() or c in "_.-") else "-" for c in stem)
+    return cleaned[:128] or "document"
+
+
+def suffix_of(source: str) -> str:
+    tail = source.split("?", 1)[0]
+    return Path(tail).suffix.lower()
+
+
+def is_supported(source: str) -> bool:
+    return suffix_of(source) in SUPPORTED_SUFFIXES
+
+
+def is_html(source: str) -> bool:
+    return suffix_of(source) == ".html"
+
+
+def detect_modality(source: str) -> str:
+    """Classify the input modality (pdf/image/word/slides/sheet/html/url/unknown)."""
+    suffix = suffix_of(source)
+    if not suffix and is_url(source):
+        return "url"
+    for modality, suffixes in MODALITY_SUFFIXES.items():
+        if suffix in suffixes:
+            return modality
+    return "unknown"
+
+
+def to_agent_page_range(page_ranges: Optional[str]) -> Optional[str]:
+    """Agent API only supports ``from-to`` or a single page (no commas)."""
+    if not page_ranges:
+        return None
+    first = page_ranges.split(",", 1)[0].strip()
+    return first or None
+
+
+def error_hint(code) -> str:
+    """Human-friendly hint for an API error code (falls back to the raw code)."""
+    if code in ERROR_HINTS:
+        return ERROR_HINTS[code]
+    return f"API error (code {code})"
+
+
+def choose_api(
+    *,
+    token: Optional[str],
+    source: str,
+    size_bytes: Optional[int],
+    batch: bool,
+    extra_formats,
+    explicit: str = "auto",
+) -> str:
+    """Decide which backend to use. ``explicit`` of 'agent'/'standard' wins."""
+    if explicit in ("agent", "standard"):
+        return explicit
+    # HTML is Standard-only (MinerU-HTML model); Agent API rejects it.
+    if is_html(source):
+        return "standard"
+    if not token:
+        return "agent"
+    if batch or extra_formats:
+        return "standard"
+    if size_bytes is not None and size_bytes > AGENT_MAX_BYTES:
+        return "standard"
+    return "agent"
+
+
+# --------------------------------------------------------------------------- #
+# HTTP seam (the single place tests monkeypatch)
+# --------------------------------------------------------------------------- #
+def _http(method, url, *, headers=None, data=None, timeout=60):
+    """Perform one HTTP request. Returns ``(status_code, body_bytes)``."""
+    req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
+    req.add_header("User-Agent", USER_AGENT)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.getcode(), resp.read()
+    except urllib.error.HTTPError as exc:  # surface body for diagnostics
+        body = exc.read() if hasattr(exc, "read") else b""
+        if exc.code == 429:
+            raise MinerUError("Rate limited (HTTP 429) — slow down or set a token", code=429)
+        return exc.code, body
+
+
+def _api_json(method, url, *, token=None, payload=None, timeout=60) -> dict:
+    """Call a MinerU JSON endpoint and return ``data``, raising on ``code != 0``."""
+    headers = {"Accept": "*/*"}
+    body = None
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        body = json.dumps(payload).encode("utf-8")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    status, raw = _http(method, url, headers=headers, data=body, timeout=timeout)
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        raise MinerUError(f"Non-JSON response (HTTP {status}) from {url}")
+    # MinerU returns two envelopes: the business layer uses {code, data, msg}
+    # while the auth/gateway layer uses {success, msgCode, msg} (e.g. on a bad
+    # token). Handle both so credential errors surface clearly.
+    if parsed.get("success") is False:
+        code = parsed.get("msgCode") or parsed.get("code")
+        hint = ERROR_HINTS.get(code) or parsed.get("msg") or error_hint(code)
+        raise MinerUError(hint, code=code)
+    code = parsed.get("code")
+    if code not in (0, None):
+        raise MinerUError(error_hint(code), code=code)
+    data = parsed.get("data")
+    if data is None and code is None and "success" not in parsed:
+        raise MinerUError(f"Unexpected response (HTTP {status}) from {url}")
+    return data or {}
+
+
+def _put_file(upload_url: str, path: str, timeout=300) -> None:
+    """Upload a local file to a signed OSS URL (no Content-Type per docs)."""
+    with open(path, "rb") as handle:
+        data = handle.read()
+    status, _ = _http("PUT", upload_url, data=data, timeout=timeout)
+    if status not in (200, 201, 203):
+        raise MinerUError(f"Upload failed (HTTP {status})")
+
+
+def _download(url: str, timeout=300) -> bytes:
+    status, raw = _http("GET", url, timeout=timeout)
+    if status != 200:
+        raise MinerUError(f"Download failed (HTTP {status})")
+    return raw
+
+
+# --------------------------------------------------------------------------- #
+# Agent API (lightweight, no token)
+# --------------------------------------------------------------------------- #
+def _agent_payload(opts: ParseOptions) -> dict:
+    payload = {
+        "language": opts.language,
+        "enable_table": opts.enable_table,
+        "is_ocr": opts.is_ocr,
+        "enable_formula": opts.enable_formula,
+    }
+    page_range = to_agent_page_range(opts.page_ranges)
+    if page_range:
+        payload["page_range"] = page_range
+    return payload
+
+
+def agent_parse(source: str, opts: ParseOptions, *, poll_interval=3, timeout=600):
+    """Parse one URL or file via the Agent API. Returns the Markdown text."""
+    if is_url(source):
+        payload = {"url": source, **_agent_payload(opts)}
+        data = _api_json("POST", f"{AGENT_API}/parse/url", payload=payload)
+        task_id = data["task_id"]
+    else:
+        payload = {"file_name": Path(source).name, **_agent_payload(opts)}
+        data = _api_json("POST", f"{AGENT_API}/parse/file", payload=payload)
+        task_id = data["task_id"]
+        _put_file(data["file_url"], source)
+    markdown = _agent_poll(task_id, poll_interval=poll_interval, timeout=timeout)
+    return markdown, task_id
+
+
+def _agent_poll(task_id, *, poll_interval, timeout) -> str:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        data = _api_json("GET", f"{AGENT_API}/parse/{task_id}")
+        state = data.get("state")
+        if state == STATE_DONE:
+            return _download(data["markdown_url"]).decode("utf-8", errors="replace")
+        if state == STATE_FAILED:
+            raise MinerUError(
+                data.get("err_msg") or error_hint(data.get("err_code")),
+                code=data.get("err_code"),
+            )
+        time.sleep(poll_interval)
+    raise MinerUError("Agent parse timed out")
+
+
+# --------------------------------------------------------------------------- #
+# Standard API (v4, token required)
+# --------------------------------------------------------------------------- #
+def _standard_model(opts: ParseOptions, source: str) -> str:
+    return "MinerU-HTML" if is_html(source) else opts.model
+
+
+def standard_parse(
+    source: str, opts: ParseOptions, token: str, *, poll_interval=3, timeout=600
+):
+    """Parse one URL or file via the Standard API. Returns zip bytes of the result."""
+    model = _standard_model(opts, source)
+    if is_url(source):
+        payload = {
+            "url": source,
+            "model_version": model,
+            "is_ocr": opts.is_ocr,
+            "enable_formula": opts.enable_formula,
+            "enable_table": opts.enable_table,
+            "language": opts.language,
+        }
+        if opts.page_ranges:
+            payload["page_ranges"] = opts.page_ranges
+        if opts.extra_formats:
+            payload["extra_formats"] = list(opts.extra_formats)
+        data = _api_json("POST", f"{STANDARD_API}/extract/task", token=token, payload=payload)
+        zip_url = _standard_poll_task(data["task_id"], token, poll_interval=poll_interval, timeout=timeout)
+        return _download(zip_url), data["task_id"]
+
+    # Local file: request a signed upload URL, PUT the bytes, then poll the batch.
+    file_entry = {"name": Path(source).name, "data_id": safe_data_id(safe_stem(source))}
+    if opts.is_ocr:
+        file_entry["is_ocr"] = True
+    if opts.page_ranges:
+        file_entry["page_ranges"] = opts.page_ranges
+    payload = {
+        "files": [file_entry],
+        "model_version": model,
+        "enable_formula": opts.enable_formula,
+        "enable_table": opts.enable_table,
+        "language": opts.language,
+    }
+    if opts.extra_formats:
+        payload["extra_formats"] = list(opts.extra_formats)
+    data = _api_json("POST", f"{STANDARD_API}/file-urls/batch", token=token, payload=payload)
+    batch_id = data["batch_id"]
+    _put_file(data["file_urls"][0], source)
+    zip_url = _standard_poll_batch(batch_id, token, Path(source).name, poll_interval=poll_interval, timeout=timeout)
+    return _download(zip_url), batch_id
+
+
+def _standard_poll_task(task_id, token, *, poll_interval, timeout) -> str:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        data = _api_json("GET", f"{STANDARD_API}/extract/task/{task_id}", token=token)
+        state = data.get("state")
+        if state == STATE_DONE:
+            return data["full_zip_url"]
+        if state == STATE_FAILED:
+            raise MinerUError(data.get("err_msg") or "Parse failed", code=None)
+        time.sleep(poll_interval)
+    raise MinerUError("Standard parse timed out")
+
+
+def _standard_poll_batch(batch_id, token, file_name, *, poll_interval, timeout) -> str:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        data = _api_json("GET", f"{STANDARD_API}/extract-results/batch/{batch_id}", token=token)
+        for entry in data.get("extract_result", []):
+            if entry.get("file_name") != file_name:
+                continue
+            state = entry.get("state")
+            if state == STATE_DONE:
+                return entry["full_zip_url"]
+            if state == STATE_FAILED:
+                raise MinerUError(entry.get("err_msg") or "Parse failed", code=None)
+        time.sleep(poll_interval)
+    raise MinerUError("Standard parse timed out")
+
+
+# --------------------------------------------------------------------------- #
+# Output writing
+# --------------------------------------------------------------------------- #
+def write_markdown(stem: str, markdown: str, output_dir: Path) -> Path:
+    """Write a bare Markdown string (Agent API result) to ``<dir>/<stem>/<stem>.md``."""
+    target_dir = output_dir / stem
+    target_dir.mkdir(parents=True, exist_ok=True)
+    md_path = target_dir / f"{stem}.md"
+    md_path.write_text(markdown, encoding="utf-8")
+    return md_path
+
+
+def write_zip(stem: str, zip_bytes: bytes, output_dir: Path) -> Path:
+    """Extract a Standard API result zip and return the path to the renamed Markdown."""
+    target_dir = output_dir / stem
+    target_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(BytesIO(zip_bytes)) as archive:
+        archive.extractall(target_dir)
+    full_md = target_dir / "full.md"
+    md_path = target_dir / f"{stem}.md"
+    if full_md.exists():
+        full_md.replace(md_path)
+    elif not md_path.exists():
+        # Fall back to any *.md the archive produced.
+        found = next(iter(target_dir.glob("*.md")), None)
+        if found:
+            found.replace(md_path)
+    return md_path
+
+
+def copy_to_obsidian(md_path: Path, stem: str, vault: Path) -> Path:
+    """Copy the parsed Markdown (and sibling images) into an Obsidian vault folder."""
+    vault.mkdir(parents=True, exist_ok=True)
+    dest = vault / f"{stem}.md"
+    dest.write_text(md_path.read_text(encoding="utf-8"), encoding="utf-8")
+    images = md_path.parent / "images"
+    if images.is_dir():
+        dest_images = vault / "images"
+        dest_images.mkdir(exist_ok=True)
+        for img in images.iterdir():
+            if img.is_file():
+                (dest_images / img.name).write_bytes(img.read_bytes())
+    return dest
+
+
+# --------------------------------------------------------------------------- #
+# Per-input orchestration
+# --------------------------------------------------------------------------- #
+def process_one(
+    source: str,
+    opts: ParseOptions,
+    *,
+    token: Optional[str],
+    output_dir: Path,
+    api: str = "auto",
+    obsidian: Optional[Path] = None,
+    resume: bool = False,
+    poll_interval: float = 3,
+    timeout: float = 600,
+) -> ParseResult:
+    """Parse a single input end to end, choosing the backend and writing output."""
+    stem = safe_stem(source)
+    result = ParseResult(name=stem, source=source, modality=detect_modality(source))
+    started = time.monotonic()
+
+    if resume and (output_dir / stem / f"{stem}.md").exists():
+        result.state = "skipped"
+        result.output_dir = str(output_dir / stem)
+        result.markdown_path = str(output_dir / stem / f"{stem}.md")
+        return result
+
+    size_bytes = None
+    if not is_url(source):
+        try:
+            size_bytes = os.path.getsize(source)
+        except OSError:
+            pass
+
+    chosen = choose_api(
+        token=token,
+        source=source,
+        size_bytes=size_bytes,
+        batch=False,
+        extra_formats=opts.extra_formats,
+        explicit=api,
+    )
+
+    try:
+        result.api = chosen
+        if chosen == "standard":
+            if not token:
+                raise MinerUError(
+                    "Standard API needs a token — set MINERU_TOKEN "
+                    "(https://mineru.net/apiManage/token)"
+                )
+            zip_bytes, task_id = standard_parse(
+                source, opts, token, poll_interval=poll_interval, timeout=timeout
+            )
+            result.task_id = task_id
+            md_path = write_zip(stem, zip_bytes, output_dir)
+            result.markdown = md_path.read_text(encoding="utf-8") if md_path.exists() else ""
+        else:
+            try:
+                markdown, task_id = agent_parse(
+                    source, opts, poll_interval=poll_interval, timeout=timeout
+                )
+            except MinerUError as exc:
+                # Auto-escalate to the Standard API when a token is available.
+                if api == "auto" and token and exc.code in AGENT_ESCALATABLE:
+                    result.api = "standard"
+                    zip_bytes, task_id = standard_parse(
+                        source, opts, token, poll_interval=poll_interval, timeout=timeout
+                    )
+                    result.task_id = task_id
+                    md_path = write_zip(stem, zip_bytes, output_dir)
+                    result.markdown = md_path.read_text(encoding="utf-8") if md_path.exists() else ""
+                    return _finalize(result, stem, output_dir, md_path, obsidian, started)
+                raise
+            result.task_id = task_id
+            md_path = write_markdown(stem, markdown, output_dir)
+            result.markdown = markdown
+        return _finalize(result, stem, output_dir, md_path, obsidian, started)
+    except MinerUError as exc:
+        result.state = STATE_FAILED
+        result.error = str(exc)
+        return result
+    except (OSError, urllib.error.URLError) as exc:
+        result.state = STATE_FAILED
+        result.error = str(exc)
+        return result
+
+
+def _finalize(result, stem, output_dir, md_path, obsidian, started=None) -> ParseResult:
+    result.state = STATE_DONE
+    result.output_dir = str(output_dir / stem)
+    result.markdown_path = str(md_path)
+    if started is not None:
+        result.elapsed = round(time.monotonic() - started, 2)
+    if obsidian is not None:
+        copy_to_obsidian(md_path, stem, obsidian)
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# Input expansion + CLI
+# --------------------------------------------------------------------------- #
+def expand_inputs(raw_inputs) -> list:
+    """Expand directories into supported files; pass through URLs and files."""
+    expanded = []
+    for item in raw_inputs:
+        if is_url(item):
+            expanded.append(item)
+            continue
+        path = Path(item)
+        if path.is_dir():
+            for child in sorted(path.iterdir()):
+                if child.is_file() and is_supported(child.name):
+                    expanded.append(str(child))
+        else:
+            expanded.append(item)
+    return expanded
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="mineru",
+        description="Parse PDF / Office / image files into Markdown via MinerU.",
+    )
+    parser.add_argument("inputs", nargs="*", help="File(s), a directory, or a URL")
+    parser.add_argument("--output", "-o", default="./output", help="Output directory (default: ./output)")
+    parser.add_argument("--token", help="MinerU API token (or set MINERU_TOKEN)")
+    parser.add_argument("--api", choices=["auto", "agent", "standard"], default="auto",
+                        help="Backend selection (default: auto)")
+    parser.add_argument("--model", choices=["pipeline", "vlm", "MinerU-HTML"], default="vlm",
+                        help="Standard API model (default: vlm)")
+    parser.add_argument("--format", dest="formats", action="append", default=[],
+                        choices=["docx", "html", "latex"], help="Extra export format (repeatable; forces Standard API)")
+    parser.add_argument("--lang", default="ch", help="Document language code (default: ch)")
+    parser.add_argument("--ocr", action="store_true", help="Enable OCR for scanned documents")
+    parser.add_argument("--no-formula", action="store_true", help="Disable formula recognition")
+    parser.add_argument("--no-table", action="store_true", help="Disable table recognition")
+    parser.add_argument("--pages", help="Page range, e.g. '1-10' or '2,4-6' (Standard only)")
+    parser.add_argument("--workers", "-w", type=int, default=4, help="Concurrent inputs (default: 4)")
+    parser.add_argument("--resume", action="store_true", help="Skip inputs already parsed")
+    parser.add_argument("--obsidian", help="Shortcut for --to obsidian with this vault path")
+    parser.add_argument("--to", dest="to", action="append", default=[], metavar="SINK",
+                        help="Deliver parsed Markdown to a content tool (repeatable): "
+                             "obsidian, logseq, siyuan, notion, linear, yuque, coda, slack, "
+                             "feishu, confluence, onenote, ticktick, dingtalk, airtable, wecom")
+    parser.add_argument("--list-sinks", action="store_true", help="List available delivery targets and exit")
+    parser.add_argument("--stdout", action="store_true", help="Print Markdown to stdout (single input)")
+    parser.add_argument("--json", dest="as_json", action="store_true", help="Print machine-readable status to stdout")
+    parser.add_argument("--timeout", type=int, default=600, help="Per-input timeout in seconds (default: 600)")
+    parser.add_argument("--quiet", "-q", action="store_true", help="Suppress progress output")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    return parser
+
+
+def options_from_args(args) -> ParseOptions:
+    return ParseOptions(
+        model=args.model,
+        language=args.lang,
+        is_ocr=args.ocr,
+        enable_formula=not args.no_formula,
+        enable_table=not args.no_table,
+        page_ranges=args.pages,
+        extra_formats=tuple(args.formats),
+    )
+
+
+def _log(message, *, quiet):
+    if not quiet:
+        print(message, file=sys.stderr, flush=True)
+
+
+def _load_sinks():
+    """Import the optional ``sinks`` delivery package; return the module or None."""
+    try:
+        script_dir = str(Path(__file__).resolve().parent)
+        if script_dir not in sys.path:
+            sys.path.insert(0, script_dir)
+        import sinks
+        return sinks
+    except Exception:  # pragma: no cover - sinks are optional
+        return None
+
+
+def _print_sinks() -> int:
+    sinks = _load_sinks()
+    if sinks is None:
+        print("Delivery sinks unavailable (scripts/sinks not importable).", file=sys.stderr)
+        return 1
+    print("Available delivery targets (use --to NAME, repeatable):\n")
+    for name in sinks.sink_names():
+        sink = sinks.get_sink(name)
+        req = ", ".join(sink.requires) if sink.requires else "(no config needed)"
+        print(f"  {name:11} — {sink.label}\n{'':14}env: {req}")
+    return 0
+
+
+def _deliver(results, names, sinks, *, quiet):
+    """Deliver each completed result's Markdown to the requested sinks."""
+    for res in results:
+        if res.state != STATE_DONE or not res.markdown:
+            continue
+        doc = sinks.ParsedDoc(
+            title=res.name, markdown=res.markdown, source=res.source,
+            modality=res.modality, markdown_path=res.markdown_path,
+        )
+        for outcome in sinks.deliver_all(doc, names):
+            res.sinks.append(outcome.to_status())
+            if outcome.ok:
+                _log(f"     📤 {res.name} → {outcome.sink}: {outcome.url or outcome.detail or 'ok'}",
+                     quiet=quiet)
+            else:
+                _log(f"     ⚠️  {res.name} → {outcome.sink}: {outcome.error}", quiet=quiet)
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+
+    if args.list_sinks:
+        return _print_sinks()
+
+    if args.obsidian:
+        os.environ["OBSIDIAN_VAULT"] = str(Path(args.obsidian).expanduser())
+        if "obsidian" not in args.to:
+            args.to.append("obsidian")
+
+    token = args.token or os.environ.get("MINERU_TOKEN")
+    opts = options_from_args(args)
+    output_dir = Path(args.output)
+
+    sources = expand_inputs(args.inputs)
+    if not sources:
+        _log("No supported inputs found.", quiet=args.quiet)
+        return 1
+
+    unsupported = [s for s in sources if not is_url(s) and not is_supported(s)]
+    if unsupported:
+        _log(f"Unsupported file type(s): {', '.join(unsupported)}", quiet=args.quiet)
+        return 1
+
+    if (args.stdout or args.as_json) and len(sources) > 1:
+        # Keep stdout machine-clean: route progress to stderr only (already does).
+        pass
+
+    workers = max(1, min(args.workers, len(sources)))
+    _log(
+        f"📚 {len(sources)} input(s) · workers={workers} · "
+        f"{'token set' if token else 'no token (Agent API)'}",
+        quiet=args.quiet,
+    )
+
+    results: list = []
+
+    def run(source):
+        res = process_one(
+            source, opts, token=token, output_dir=output_dir, api=args.api,
+            obsidian=None, resume=args.resume, timeout=args.timeout,
+        )
+        icon = {"done": "✅", "skipped": "⏭️", "failed": "❌"}.get(res.state, "•")
+        timing = f" ({res.elapsed}s)" if res.elapsed else ""
+        _log(
+            f"  {icon} [{res.api}/{res.modality}] {res.name}{timing}"
+            + (f" — {res.error}" if res.error else ""),
+            quiet=args.quiet,
+        )
+        return res
+
+    if workers == 1:
+        results = [run(s) for s in sources]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(run, s): s for s in sources}
+            for future in as_completed(futures):
+                results.append(future.result())
+
+    done = [r for r in results if r.state == STATE_DONE]
+    skipped = [r for r in results if r.state == "skipped"]
+    failed = [r for r in results if r.state == STATE_FAILED]
+
+    if args.to:
+        sinks = _load_sinks()
+        if sinks is None:
+            _log("⚠️  --to requested but the sinks package is unavailable.", quiet=args.quiet)
+        else:
+            _deliver(results, args.to, sinks, quiet=args.quiet)
+
+    if args.as_json:
+        print(json.dumps({
+            "total": len(results),
+            "done": len(done),
+            "skipped": len(skipped),
+            "failed": len(failed),
+            "results": [r.to_status() for r in results],
+        }, ensure_ascii=False, indent=2))
+    elif args.stdout:
+        for r in results:
+            if r.markdown is not None:
+                print(r.markdown)
+
+    _log(
+        f"\n{'='*48}\n✅ {len(done)} · ⏭️ {len(skipped)} · ❌ {len(failed)}"
+        + (f"\n📁 {output_dir}" if done else ""),
+        quiet=args.quiet,
+    )
+    if failed:
+        _log("Failed: " + ", ".join(f"{r.name} ({r.error})" for r in failed), quiet=args.quiet)
+    return 1 if failed and not done else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
