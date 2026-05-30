@@ -160,12 +160,15 @@ python3 scripts/mineru.py paper.pdf --to obsidian --to notion --to slack
 | 📓 Notes (local) | Obsidian · Logseq · SiYuan | `obsidian` `logseq` `siyuan` |
 | 🌐 Docs / Wiki | Notion · Confluence · OneNote · Coda · Yuque 语雀 · Feishu 飞书 | `notion` `confluence` `onenote` `coda` `yuque` `feishu` |
 | 💬 Chat / Tasks | Slack · DingTalk 钉钉 · WeCom 企业微信 · TickTick 滴答 · Linear · Airtable | `slack` `dingtalk` `wecom` `ticktick` `linear` `airtable` |
+| 🧩 Optional (extras) | Roam · WPS 金山文档 | `roam` `wps` |
 
 Each target uses its native Markdown path where one exists (Obsidian, Logseq,
 SiYuan, Linear, Yuque, Coda, Feishu, TickTick) or a faithful conversion where the
-tool requires it (Notion blocks; Confluence/OneNote HTML). Full per-target auth,
-fidelity, and image-handling notes — plus the honest roadmap for Roam & WPS — live
-in **[references/integrations.md](references/integrations.md)**. Run
+tool requires it (Notion blocks; Confluence/OneNote HTML; Roam outline; WPS DOCX).
+**15 targets are zero-dependency**; Roam & WPS lazy-load a library only when used
+(`pip install "mineru-skill[roam]" "mineru-skill[wps]"`). Full per-target auth,
+fidelity, and image notes are in
+**[references/integrations.md](references/integrations.md)**. Run
 `python3 scripts/mineru.py --list-sinks` to see the required env vars.
 
 ---

@@ -155,10 +155,13 @@ python3 scripts/mineru.py paper.pdf --to obsidian --to notion --to slack
 | 📓 笔记（本地） | Obsidian · Logseq · 思源 SiYuan | `obsidian` `logseq` `siyuan` |
 | 🌐 文档 / Wiki | Notion · Confluence · OneNote · Coda · 语雀 · 飞书 | `notion` `confluence` `onenote` `coda` `yuque` `feishu` |
 | 💬 协作 / 任务 | Slack · 钉钉 · 企业微信 · 滴答清单 · Linear · Airtable | `slack` `dingtalk` `wecom` `ticktick` `linear` `airtable` |
+| 🧩 可选（extras） | Roam · WPS 金山文档 | `roam` `wps` |
 
 凡有原生 Markdown 接入的目标（Obsidian、Logseq、思源、Linear、语雀、Coda、飞书、滴答）走原生路径；
-需要转换的（Notion 块、Confluence/OneNote HTML）走忠实转换。每个目标的鉴权、保真度与图片处理说明，
-以及 Roam / WPS 的坦诚 roadmap，详见 **[references/integrations.md](references/integrations.md)**。
+需要转换的（Notion 块、Confluence/OneNote HTML、Roam 大纲、WPS DOCX）走忠实转换。
+**其中 15 个零依赖**；Roam 与 WPS 仅在使用时懒加载第三方库
+（`pip install "mineru-skill[roam]" "mineru-skill[wps]"`）。每个目标的鉴权、保真度与图片处理说明，
+详见 **[references/integrations.md](references/integrations.md)**。
 运行 `python3 scripts/mineru.py --list-sinks` 查看所需环境变量。
 
 ---

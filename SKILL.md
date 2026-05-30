@@ -86,9 +86,10 @@ python3 scripts/mineru.py paper.pdf --to obsidian --to notion --to feishu
 ```
 
 Targets: `obsidian` `logseq` `siyuan` `notion` `linear` `yuque` `coda` `slack`
-`feishu` `confluence` `onenote` `ticktick` `dingtalk` `airtable` `wecom`. Each
-reads its config from env vars (run `--list-sinks`). Per-target auth, fidelity,
-and image notes: [references/integrations.md](references/integrations.md).
+`feishu` `confluence` `onenote` `ticktick` `dingtalk` `airtable` `wecom` (all
+zero-dependency), plus `roam` and `wps` via optional extras. Each reads its config
+from env vars (run `--list-sinks`). Per-target auth, fidelity, and image notes:
+[references/integrations.md](references/integrations.md).
 
 ## Output
 

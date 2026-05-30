@@ -37,6 +37,8 @@ _MODULES = [
     "feishu",
     "confluence",
     "onenote",
+    "roam",        # optional dependency (roam-client)
+    "wps",         # optional dependency (html-for-docx)
 ]
 
 IMPORT_ERRORS: dict = {}
