@@ -1033,10 +1033,11 @@ def _poll_until_done(active, opts, token, output_dir, *, poll_interval, obsidian
         interval = poll_interval if progressed else min(interval * 1.5, POLL_INTERVAL_CAP)
     for future in dl_futures:
         future.result()  # _download_and_write swallows its own errors into the result
-    # Notify completions after their downloads have finished (stable log/order).
+    # Notify every resolved job after downloads finish (the guard de-dupes earlier
+    # poll-failure notifications); includes jobs that failed *inside* the download
+    # step, so none are silently left unreported.
     for job in active:
-        if job.result.state == STATE_DONE:
-            on_done(job)
+        on_done(job)
 
 
 def run_pipeline(sources, opts, *, token, output_dir, api, resume, poll_interval,
@@ -1096,6 +1097,7 @@ def run_pipeline(sources, opts, *, token, output_dir, api, resume, poll_interval
                     if job.result.state != STATE_DONE:
                         job.result.state = STATE_FAILED
                         job.result.error = f"submit failed: {msg}"
+                        job.finished = True
                         _notify(job)
 
         # Phase 2 — upload (parallel): PUT each reserved file to its signed URL.
@@ -1109,10 +1111,14 @@ def run_pipeline(sources, opts, *, token, output_dir, api, resume, poll_interval
             except Exception as exc:  # noqa: BLE001
                 job.result.state = STATE_FAILED
                 job.result.error = f"upload failed: {exc}"
+                job.finished = True
                 _notify(job)
 
-        # Phase 3 — poll + download (decoupled).
-        active = [j for j in pending if j.poll_id and j.result.state not in (STATE_FAILED, "skipped")]
+        # Phase 3 — poll + download (decoupled). Gate on the ``finished`` flag, NOT
+        # result.state: a freshly submitted job's ParseResult still carries its default
+        # ``failed`` state, so a state-based filter would drop every in-flight job and
+        # skip polling entirely — reporting the whole batch as failed.
+        active = [j for j in pending if j.poll_id and not j.finished]
         if active:
             _poll_until_done(
                 active, opts, token, output_dir, poll_interval=poll_interval,

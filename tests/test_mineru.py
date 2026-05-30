@@ -420,3 +420,240 @@ def test_main_json_output(router, tmp_path, capsys, monkeypatch):
     payload = json.loads(capsys.readouterr().out)
     assert payload["done"] == 1
     assert payload["results"][0]["api"] == "agent"
+
+
+# --------------------------------------------------------------------------- #
+# Retry / backoff layer (patches the lower _send_once seam; _http wraps it)
+# --------------------------------------------------------------------------- #
+def test_http_retries_5xx_then_succeeds(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_send(method, url, *, headers=None, data=None, timeout=60):
+        calls["n"] += 1
+        return (503, b"busy", None) if calls["n"] == 1 else (200, b"ok", None)
+
+    monkeypatch.setattr(mineru, "_send_once", fake_send)
+    monkeypatch.setattr(mineru, "_backoff_delay", lambda *a, **k: 0)
+    status, body = mineru._http("GET", "https://x/y")
+    assert status == 200 and body == b"ok" and calls["n"] == 2
+
+
+def test_http_does_not_retry_4xx(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_send(*a, **k):
+        calls["n"] += 1
+        return 404, b"nope", None
+
+    monkeypatch.setattr(mineru, "_send_once", fake_send)
+    status, body = mineru._http("GET", "https://x/y")
+    assert status == 404 and calls["n"] == 1  # client/business errors are not retried
+
+
+def test_http_429_retries_then_raises(monkeypatch):
+    monkeypatch.setattr(mineru, "_send_once", lambda *a, **k: (429, b"", "1"))
+    monkeypatch.setattr(mineru, "_backoff_delay", lambda *a, **k: 0)
+    with pytest.raises(mineru.MinerUError) as exc:
+        mineru._http("GET", "https://x/y")
+    assert exc.value.code == 429
+
+
+def test_http_network_error_retries_then_raises(monkeypatch):
+    import urllib.error
+
+    def fake_send(*a, **k):
+        raise urllib.error.URLError("boom")
+
+    monkeypatch.setattr(mineru, "_send_once", fake_send)
+    monkeypatch.setattr(mineru, "_backoff_delay", lambda *a, **k: 0)
+    with pytest.raises(mineru.MinerUError):
+        mineru._http("GET", "https://x/y")
+
+
+def test_backoff_delay_grows_caps_and_honors_retry_after():
+    assert 0 < mineru._backoff_delay(0) <= mineru.RETRY_BASE_DELAY
+    assert mineru._backoff_delay(8) <= mineru.RETRY_MAX_DELAY
+    assert mineru._backoff_delay(0, "2") == 2.0  # explicit Retry-After wins
+
+
+# --------------------------------------------------------------------------- #
+# Streaming + atomic writers
+# --------------------------------------------------------------------------- #
+def test_extract_zip_path_renames_full_md(tmp_path):
+    zip_file = tmp_path / "r.zip"
+    zip_file.write_bytes(_make_zip("# Streamed\n"))
+    md = mineru.extract_zip_path("doc", zip_file, tmp_path / "out")
+    assert md == tmp_path / "out" / "doc" / "doc.md"
+    assert md.read_text() == "# Streamed\n"
+
+
+def test_write_markdown_is_atomic(tmp_path):
+    md = mineru.write_markdown("d", "# A\n", tmp_path)
+    assert md.read_text() == "# A\n"
+    assert not list((tmp_path / "d").glob(".*partial"))  # no leftover temp file
+
+
+# --------------------------------------------------------------------------- #
+# Decoupled pipeline: true batch submit, batch poll, failure isolation.
+# These pin the `active`-filter regression: without the fix the poll phase is
+# skipped and every batched file is wrongly reported failed.
+# --------------------------------------------------------------------------- #
+def test_chunk_standard_files_splits_by_model_and_size():
+    opts = mineru.ParseOptions()
+    pdfs = [
+        mineru._Job(
+            source=f"f{i}.pdf",
+            stem=f"f{i}",
+            api="standard",
+            is_url=False,
+            result=mineru.ParseResult(name=f"f{i}", source=f"f{i}.pdf"),
+        )
+        for i in range(3)
+    ]
+    html = mineru._Job(
+        source="p.html",
+        stem="p",
+        api="standard",
+        is_url=False,
+        result=mineru.ParseResult(name="p", source="p.html"),
+    )
+    chunks = mineru._chunk_standard_files(pdfs + [html], opts, batch_size=2)
+    assert sorted(len(c) for c in chunks) == [1, 1, 2]  # pdfs -> 2+1, html isolated
+    assert any(all(mineru.is_html(j.source) for j in c) for c in chunks)
+
+
+def test_run_pipeline_true_batch_submit(router, tmp_path, monkeypatch):
+    a = tmp_path / "a.pdf"
+    a.write_bytes(b"%PDF a")
+    b = tmp_path / "b.pdf"
+    b.write_bytes(b"%PDF b")
+    router.add(
+        "/file-urls/batch",
+        [(200, _ok({"batch_id": "B", "file_urls": ["https://oss/a", "https://oss/b"]}))],
+        method="POST",
+    )
+    router.add("oss/a", [(200, b"")], method="PUT")
+    router.add("oss/b", [(200, b"")], method="PUT")
+    router.add(
+        "/extract-results/batch/B",
+        [
+            (
+                200,
+                _ok(
+                    {
+                        "extract_result": [
+                            {
+                                "file_name": "a.pdf",
+                                "state": "done",
+                                "full_zip_url": "https://cdn/a.zip",
+                            },
+                            {
+                                "file_name": "b.pdf",
+                                "state": "done",
+                                "full_zip_url": "https://cdn/b.zip",
+                            },
+                        ]
+                    }
+                ),
+            )
+        ],
+    )
+
+    def fake_download(url, dest, *, timeout=300):
+        Path(dest).write_bytes(_make_zip(f"# {url[-5:]}\n"))
+        return dest
+
+    monkeypatch.setattr(mineru, "_download_to_path", fake_download)
+
+    results = mineru.run_pipeline(
+        [str(a), str(b)],
+        mineru.ParseOptions(),
+        token="t",
+        output_dir=tmp_path / "out",
+        api="standard",
+        resume=False,
+        poll_interval=0,
+        timeout=300,
+        batch_size=50,
+        workers=1,
+        want_markdown=True,
+    )
+    assert sorted(r.state for r in results) == ["done", "done"]
+    # The whole batch was submitted in ONE /file-urls/batch call with both files.
+    posts = [d for m, u, d in router.calls if m == "POST" and u.endswith("/file-urls/batch")]
+    assert len(posts) == 1
+    assert len(json.loads(posts[0].decode())["files"]) == 2
+    assert (tmp_path / "out" / "a" / "a.md").exists()
+    assert (tmp_path / "out" / "b" / "b.md").exists()
+
+
+def test_run_pipeline_isolates_per_file_failure(router, tmp_path):
+    router.add(
+        "/agent/parse/url",
+        [(200, _ok({"task_id": "A1"})), (200, _ok({"task_id": "A2"}))],
+        method="POST",
+    )
+    router.add(
+        "/agent/parse/A1",
+        [(200, _ok({"state": "done", "markdown_url": "https://cdn/a1.md"}))],
+    )
+    router.add(
+        "/agent/parse/A2",
+        [(200, _ok({"state": "failed", "err_code": -60010, "err_msg": "parse failed"}))],
+    )
+    router.add("cdn/a1.md", [(200, b"# A1\n")])
+
+    results = mineru.run_pipeline(
+        ["https://x.com/a.pdf", "https://x.com/b.pdf"],
+        mineru.ParseOptions(),
+        token=None,
+        output_dir=tmp_path,
+        api="auto",
+        resume=False,
+        poll_interval=0,
+        timeout=300,
+        batch_size=50,
+        workers=1,
+        want_markdown=True,
+    )
+    # one bad file does not abort the batch
+    assert sorted(r.state for r in results) == ["done", "failed"]
+
+
+def test_main_batch_routes_through_pipeline(router, tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("MINERU_TOKEN", raising=False)
+    f1 = tmp_path / "x.pdf"
+    f1.write_bytes(b"%PDF")
+    f2 = tmp_path / "y.pdf"
+    f2.write_bytes(b"%PDF")
+    router.add(
+        "/agent/parse/file",
+        [
+            (200, _ok({"task_id": "M1", "file_url": "https://oss/1"})),
+            (200, _ok({"task_id": "M2", "file_url": "https://oss/2"})),
+        ],
+        method="POST",
+    )
+    router.add("oss/", [(200, b"")], method="PUT")
+    router.add("/agent/parse/M1", [(200, _ok({"state": "done", "markdown_url": "https://cdn/1.md"}))])
+    router.add("/agent/parse/M2", [(200, _ok({"state": "done", "markdown_url": "https://cdn/2.md"}))])
+    router.add("cdn/1.md", [(200, b"# One\n")])
+    router.add("cdn/2.md", [(200, b"# Two\n")])
+
+    code = mineru.main(
+        [
+            str(f1),
+            str(f2),
+            "--output",
+            str(tmp_path / "out"),
+            "--workers",
+            "1",
+            "--poll-interval",
+            "0",
+            "--json",
+            "--quiet",
+        ]
+    )
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["done"] == 2 and payload["failed"] == 0
