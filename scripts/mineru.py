@@ -1331,6 +1331,7 @@ def build_parser() -> argparse.ArgumentParser:
                              "obsidian, logseq, siyuan, notion, linear, yuque, coda, slack, "
                              "feishu, confluence, onenote, ticktick, dingtalk, airtable, wecom")
     parser.add_argument("--list-sinks", action="store_true", help="List available delivery targets and exit")
+    parser.add_argument("--doctor", action="store_true", help="Run an environment self-check and exit")
     parser.add_argument("--chunk", action="store_true", help="Also emit heading-aware RAG chunks (JSON sidecar + --json)")
     parser.add_argument("--chunk-size", type=int, default=2000, help="Max characters per chunk (default: 2000)")
     parser.add_argument("--split", action="store_true",
@@ -1386,6 +1387,87 @@ def _print_sinks() -> int:
     return 0
 
 
+def _check_network() -> tuple:
+    try:
+        status, _ = _http("GET", "https://mineru.net/", timeout=8)
+        return True, f"reachable (HTTP {status})"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"unreachable ({type(exc).__name__})"
+
+
+def _check_token(token: str) -> tuple:
+    try:
+        _api_json("POST", f"{STANDARD_API}/extract/task", token=token, payload={})
+        return True, "accepted"
+    except MinerUError as exc:
+        if exc.code in ("A0202", "A0211"):
+            return False, f"invalid/expired ({exc.code}) — refresh at https://mineru.net/apiManage/token"
+        return True, "accepted (token authenticates; a parameter error is expected here)"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"check failed ({type(exc).__name__})"
+
+
+def _module_present(module: str) -> bool:
+    import importlib.util
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _doctor(as_json: bool = False) -> int:
+    """Environment self-check: Python, API reachability, token, optional extras, sinks."""
+    import platform
+
+    py_ok = sys.version_info >= (3, 8)
+    net_ok, net_detail = _check_network()
+    token = os.environ.get("MINERU_TOKEN")
+    if not token:
+        tok_ok, tok_detail = True, "not set (Agent API works token-free)"
+    else:
+        tok_ok, tok_detail = _check_token(token)
+
+    extras = {
+        "pypdf (--split)": _module_present("pypdf"),
+        "pymupdf4llm (--engine local)": _module_present("pymupdf4llm"),
+        "html-for-docx (wps sink)": _module_present("html4docx"),
+        "roam-client (roam sink)": _module_present("roam_client"),
+    }
+
+    sinks = _load_sinks()
+    if sinks is not None:
+        names = sinks.sink_names()
+        configured = [n for n in names if sinks.get_sink(n).is_configured()]
+        sinks_detail = f"{len(names)} registered · {len(configured)} configured"
+    else:
+        sinks_detail = "unavailable"
+
+    report = {
+        "version": __version__,
+        "python": {"ok": py_ok, "detail": platform.python_version()},
+        "network": {"ok": net_ok, "detail": net_detail},
+        "token": {"ok": tok_ok, "detail": tok_detail},
+        "optional_extras": extras,
+        "sinks": sinks_detail,
+        "healthy": py_ok and net_ok and tok_ok,
+    }
+
+    if as_json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        mark = lambda ok: "✅" if ok else "❌"  # noqa: E731
+        print(f"MinerU Skill doctor (v{__version__})\n")
+        print(f"  {mark(py_ok)} Python            {report['python']['detail']}")
+        print(f"  {mark(net_ok)} MinerU API        {net_detail}")
+        print(f"  {mark(tok_ok)} MINERU_TOKEN      {tok_detail}")
+        print("  · Optional extras:")
+        for label, present in extras.items():
+            print(f"      {mark(present)} {label}")
+        print(f"  · Sinks: {sinks_detail}")
+        print(f"\n{'✅ healthy' if report['healthy'] else '❌ issues found'}")
+    return 0 if report["healthy"] else 1
+
+
 def _deliver(results, names, sinks, *, quiet):
     """Deliver each completed result's Markdown to the requested sinks."""
     for res in results:
@@ -1429,6 +1511,9 @@ def _chunk_results(results, *, max_chars, quiet):
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.doctor:
+        return _doctor(as_json=args.as_json)
 
     if args.list_sinks:
         return _print_sinks()
