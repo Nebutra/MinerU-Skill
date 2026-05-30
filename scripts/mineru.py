@@ -171,10 +171,11 @@ class ParseResult:
     elapsed: Optional[float] = None
     error: Optional[str] = None
     sinks: list = field(default_factory=list)
+    chunks: Optional[list] = None
 
     def to_status(self) -> dict:
         """Machine-readable status used by ``--json`` (omits the full markdown body)."""
-        return {
+        status = {
             "name": self.name,
             "source": self.source,
             "api": self.api,
@@ -187,6 +188,9 @@ class ParseResult:
             "error": self.error,
             "sinks": self.sinks,
         }
+        if self.chunks is not None:
+            status["chunks"] = self.chunks
+        return status
 
 
 # --------------------------------------------------------------------------- #
@@ -1185,6 +1189,8 @@ def build_parser() -> argparse.ArgumentParser:
                              "obsidian, logseq, siyuan, notion, linear, yuque, coda, slack, "
                              "feishu, confluence, onenote, ticktick, dingtalk, airtable, wecom")
     parser.add_argument("--list-sinks", action="store_true", help="List available delivery targets and exit")
+    parser.add_argument("--chunk", action="store_true", help="Also emit heading-aware RAG chunks (JSON sidecar + --json)")
+    parser.add_argument("--chunk-size", type=int, default=2000, help="Max characters per chunk (default: 2000)")
     parser.add_argument("--stdout", action="store_true", help="Print Markdown to stdout (single input)")
     parser.add_argument("--json", dest="as_json", action="store_true", help="Print machine-readable status to stdout")
     parser.add_argument("--timeout", type=int, default=600, help="Per-input timeout in seconds (default: 600)")
@@ -1251,6 +1257,29 @@ def _deliver(results, names, sinks, *, quiet):
                      quiet=quiet)
             else:
                 _log(f"     ⚠️  {res.name} → {outcome.sink}: {outcome.error}", quiet=quiet)
+
+
+def _chunk_results(results, *, max_chars, quiet):
+    """Attach heading-aware RAG chunks to each result and write a JSON sidecar."""
+    try:
+        script_dir = str(Path(__file__).resolve().parent)
+        if script_dir not in sys.path:
+            sys.path.insert(0, script_dir)
+        import chunking
+    except Exception:  # pragma: no cover - chunking is stdlib, should always import
+        _log("⚠️  --chunk requested but the chunking module is unavailable.", quiet=quiet)
+        return
+    for res in results:
+        if res.state != STATE_DONE or not res.markdown:
+            continue
+        res.chunks = chunking.chunk_markdown(res.markdown, max_chars=max_chars, source=res.source)
+        if res.markdown_path:
+            sidecar = Path(res.markdown_path).with_suffix(".chunks.json")
+            try:
+                sidecar.write_text(json.dumps(res.chunks, ensure_ascii=False, indent=2), encoding="utf-8")
+                _log(f"     🧩 {res.name}: {len(res.chunks)} chunk(s) → {sidecar}", quiet=quiet)
+            except OSError:
+                pass
 
 
 def main(argv=None) -> int:
@@ -1323,6 +1352,9 @@ def main(argv=None) -> int:
             _log("⚠️  --to requested but the sinks package is unavailable.", quiet=args.quiet)
         else:
             _deliver(results, args.to, sinks, quiet=args.quiet)
+
+    if args.chunk:
+        _chunk_results(results, max_chars=args.chunk_size, quiet=args.quiet)
 
     if args.as_json:
         print(json.dumps({
