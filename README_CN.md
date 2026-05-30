@@ -52,6 +52,29 @@ PDF 解析成干净的 Markdown，直接打到终端 —— 或者喂给你的 A
 
 ---
 
+## 🤝 如何与同类对比（实事求是）
+
+MinerU Skill **不是新的解析引擎**，而是包装 [MinerU](https://github.com/opendatalab/MinerU) **云 API** 的零配置、零依赖、Agent 原生**便捷层**，外加 17 个开箱即用的投递集成。我们的精度**就是 MinerU 云端给的**（很强：MinerU2.5 在 OmniDocBench v1.5 得 **90.67**，2.5-Pro 在 v1.6 得 **95.69**）。我们的优势是 **DX、AI 原生、免 Token 零安装上手、投递广度**——**不是**最高精度，**也不是**离线方案。
+
+| 维度 | MinerU Skill（本项目） | 自托管引擎（MinerU/Marker/Docling/olmOCR） | 云 API（Mathpix/Reducto/LlamaParse） |
+|---|---|---|---|
+| 离线 / air-gap | ❌ 仅云端 | ✅ 完全离线、无上传上限 | ⚠️ 多为云端 |
+| 免 Token 上手 | ✅ 免费 Agent API | ✅（自备硬件） | ❌ 多数需 Key |
+| 零安装（无模型权重） | ✅ 纯标准库 | ❌ 多 GB 权重/GPU | ⚠️ 瘦客户端 |
+| 公式→LaTeX | 好（MinerU） | MinerU 自托管最佳 | **Mathpix 最佳（含手写）** |
+| 复杂表格 | 好（MinerU） | SOTA | **Reducto 最佳** |
+| 投递到笔记/PKM | ✅ **17 个 sink** | ❌ | ❌ |
+
+**我们真正赢的地方**：免 Token、零安装即用；**17 个一键投递目标**（没有任何引擎或企业/RAG API 自带笔记投递）；`--stdout`/`--json`、自动路由、`--resume`、并行批处理。
+
+**该用别的工具的场景（坦诚）**：机密/受监管/内网隔离 → 我们**帮不上**（每个文件都上传到 MinerU 云），请自托管 MinerU/Marker/Docling/olmOCR/PyMuPDF4LLM；要最高精度/无上限 → 自托管 **MinerU2.5-Pro**（注意榜单各有胜负：**olmOCR 在 olmOCR-Bench 领先 82.4 vs MinerU 75.8**，而 MinerU 在 OmniDocBench 领先）；纯公式/手写 OCR → **Mathpix** 更强；复杂财务表格/合规 SLA → **Reducto**；RAG 切块/结构化抽取/官方 MCP → **LlamaParse / Unstructured / Docling**；海量电子版 PDF 求快 → **PyMuPDF4LLM**（纯 CPU 每秒数百页）。
+
+> 关于速度：我们的 ~13–14s 是**单个小 demo PDF 走云端的延迟**，**不是**精度、也**不是**对自托管 GPU 引擎的速度优势（Marker ~0.18s/页、MinerU A100 ~2.12 页/秒远快于我们）。
+>
+> 完整逐工具对比与来源链接：**[references/comparison.md](references/comparison.md)**。
+
+---
+
 ## 🚀 安装为 Skill（Claude Code、Codex、Cursor 等 35+ Agent）
 
 ### Smithery

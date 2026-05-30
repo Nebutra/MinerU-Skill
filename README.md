@@ -53,6 +53,54 @@ and never touch a config file.
 
 ---
 
+## How MinerU Skill compares
+
+MinerU Skill is **not a new parsing engine** — it is a zero-config, zero-dependency, agent-native **convenience layer** over [MinerU](https://github.com/opendatalab/MinerU)'s cloud API, with 17 turnkey delivery integrations. Its accuracy is whatever MinerU's cloud serves (solid: MinerU2.5 scores **90.67** on OmniDocBench v1.5, MinerU2.5-Pro **95.69** on v1.6). Our edge is **DX, AI-nativeness, free token-free start, and delivery breadth** — *not* being the most accurate parser, and *not* an offline option. If you need offline/air-gapped parsing, top formula or table fidelity, or RAG-native chunking, a competitor below is the better tool.
+
+### Comparison matrix
+
+Legend: ✅ yes · ⚠️ partial/qualified · ❌ no. "Same backend" = calls the **same MinerU cloud API** we do, so OCR/table/formula output is **identical to ours** (no quality difference between us and those tools).
+
+| Tool | Type | Offline / self-host | Token-free start | Zero-install (no models) | Accuracy (best public benchmark) | Formula→LaTeX | Tables | Delivery to note/PKM tools | Native MCP |
+|---|---|---|---|---|---|---|---|---|---|
+| **MinerU Skill** (this) | Cloud wrapper (CLI/skill) | ❌ cloud-only | ✅ free Agent API | ✅ stdlib core | = MinerU cloud (90.67 OmniDocBench v1.5) | Good (MinerU) | Good (MinerU) | ✅ **17 sinks** | ❌ CLI only |
+| MinerU engine (self-hosted) | Self-hosted engine | ✅ fully offline | ✅ (own HW) | ❌ multi-GB torch/VLM + weights | **90.67 / 95.69-Pro** OmniDocBench | Best (owns the model) | SOTA | ❌ | ✅ official MCP |
+| Official MinerU MCP | Cloud MCP (same backend) | ❌ cloud | ✅ free Flash tier | ⚠️ pip/uvx, no weights | = ours (same backend) | = ours | = ours | ❌ | ✅ first-party |
+| MinerU-Document-Explorer | Local knowledge engine + MCP | ✅ local core | ✅ (cloud parse optional) | ❌ Node + local models | retrieval-grade | n/a (reader) | n/a | ❌ (own index/wiki) | ✅ 15 tools |
+| Marker | Self-hosted engine | ✅ offline | ✅ (LLM opt-in) | ❌ PyTorch+Surya, ~3.5–5GB VRAM | 76.1 olmOCR-Bench | Good | Good (0.91 w/LLM) | ❌ | ❌ |
+| Docling (IBM) | Self-hosted engine | ✅ offline/air-gap | ✅ | ⚠️ pip + small 258M VLM | strong-for-size; lags MinerU absolute | Good | Good (~0.96 TEDS) | ❌ (RAG framework ingest) | ✅ official MCP |
+| olmOCR (Ai2) | Self-hosted VLM | ✅ offline | ✅ (own GPU) | ❌ 12GB+ NVIDIA, no CPU | **82.4 olmOCR-Bench (leads)** | Good | Good | ❌ | ❌ |
+| PyMuPDF4LLM | Library (geometric) | ✅ offline | ✅ | ✅ light pip, no GPU | n/a (not ML; fastest on clean PDFs) | None/basic | Basic | ❌ | ❌ |
+| Mathpix | Cloud API | ❌ cloud | ❌ $19.99 setup, no free API tier | ✅ thin client | **best math/formula OCR** | **Best (incl. handwriting)** | Good | ❌ | ❌ |
+| LlamaParse | Cloud API | ❌ cloud | ❌ key required | ⚠️ pip llama-parse | top GenAI-native (no OmniDocBench #) | Basic-good | Good-excellent | ❌ (RAG indexes) | ✅ hosted MCP |
+| Unstructured | Cloud API + OSS lib | ⚠️ OSS self-host (Apache-2.0) | ⚠️ key for hosted | ⚠️ pip + per-format extras | ETL-focused, not a bench leader | Basic | Moderate-good | ❌ (vector DBs) | ✅ official MCP |
+| Reducto | Cloud API | ⚠️ VPC/on-prem (enterprise) | ❌ key required | ✅ thin client | **best complex tables (90.2% RD-TableBench, vendor-authored)** | Good | **Best (complex/financial)** | ❌ | ❌ |
+| Zerox | Library (cloud-VLM) | ❌ needs cloud LLM | ❌ paid LLM key | ⚠️ needs graphicsmagick+ghostscript | no published benchmarks | Basic (depends on VLM) | Basic-good | ❌ | ❌ |
+
+> Other same-backend MinerU wrappers (linxule/mineru-mcp, mineru-converter-mcp-server, grimoire-skill, nilecui, kesslerio) produce **identical** OCR/table/formula output to us because they hit the same engine. We differ from them only on DX (free token-free default, 17 sinks, --resume/parallel batch, stdlib-only core), **not** quality. mineru-converter even auto-splits >200MB / segments >600-page docs — exceeding the cloud caps we are bound by.
+
+### Where MinerU Skill genuinely wins
+
+- **Token-free, zero-install start** — the free Agent API needs no key, account, or `pip install` (the script's core is pure Python stdlib). Most cloud APIs (LlamaParse, Mathpix, Reducto, hosted Unstructured) require a key from page one.
+- **17 one-shot delivery sinks** (Obsidian, Logseq, SiYuan, Notion, Confluence, OneNote, Coda, Yuque, Feishu, Slack, DingTalk, WeCom, TickTick, Linear, Airtable, + Roam/WPS via optional extras) — *no* parsing engine or enterprise/RAG API here ships note/PKM delivery. (15 sinks are zero-dependency; Roam/WPS lazy-load one library.)
+- **Agent-native ergonomics**: `--stdout` Markdown + `--json` status, auto-routing Agent⇄Standard with size/page auto-escalation, `--resume` dedup, and parallel `--workers` batch, all in one ~54KB script.
+
+### When to use something else (honest take)
+
+- **Confidential / regulated / air-gapped documents** → we **cannot help**: we upload every file to MinerU's cloud. Use self-hosted **MinerU engine**, **Marker**, **Docling**, **olmOCR**, **PyMuPDF4LLM**, or self-hostable **Unstructured** — all run 100% offline with no cloud dependency and no upload-size caps.
+- **Maximum accuracy / version control** → self-host **MinerU2.5-Pro** for the same-or-better results (95.69 OmniDocBench v1.6) with no 10MB/20-page or 200MB/200-page caps. Note benchmarks disagree: **olmOCR leads olmOCR-Bench (82.4 vs MinerU 75.8)** while MinerU leads OmniDocBench — pick by your doc type.
+- **Math / formula OCR (incl. handwriting)** → **Mathpix** is the de-facto standard and clearly beats MinerU on pure formula fidelity.
+- **Complex / financial tables, SLAs, SOC2/HIPAA, on-prem** → **Reducto** (90.2% RD-TableBench).
+- **RAG pipelines** (chunking, structured JSON-Schema extraction, official MCP, framework ingestion) → **LlamaParse**, **Unstructured**, **Docling**, or **Reducto**.
+- **Huge born-digital PDF corpora where speed > fidelity** → **PyMuPDF4LLM** (hundreds of pages/sec on plain CPU, no GPU, no cloud).
+- **First-party reliability / native MCP in Claude/Cursor/Windsurf** → the **official MinerU MCP server** tracks API and format changes day-one and matches our free token-free tier; we are a third-party wrapper that can lag and ship no MCP server.
+
+> On speed: our ~13–14s figure is one small demo PDF round-tripped through the cloud — *not* a like-for-like win over self-hosted GPU engines (Marker ~0.18s/page, MinerU ~2.12 pages/sec on an A100), which are far faster at real scale. We only beat slow Apple-Silicon-CPU local runs of small docs, and our latency benchmark measures **latency, not accuracy**.
+
+> Full per-tool breakdown with source links: **[references/comparison.md](references/comparison.md)**.
+
+---
+
 ## 🚀 Install as a Skill (Claude Code, Codex, Cursor & 35+ agents)
 
 ### Vercel Skills (recommended)
@@ -213,6 +261,11 @@ Batches scale with `--workers`. Reproduce it yourself:
 ```bash
 MINERU_LIVE=1 python3 -m pytest -m live -s
 ```
+
+> **Honest caveat:** this measures **latency** (one small demo PDF round-tripped
+> through the cloud), **not accuracy**, and it is **not** a speed win over
+> self-hosted GPU engines (Marker ~0.18 s/page, MinerU ~2.12 pages/s on an A100),
+> which are far faster at scale. See [how we compare](#how-mineru-skill-compares).
 
 ---
 
