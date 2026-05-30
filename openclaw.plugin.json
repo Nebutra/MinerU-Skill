@@ -1,0 +1,13 @@
+{
+  "name": "mineru-skill",
+  "version": "3.0.0",
+  "family": "bundle-plugin",
+  "displayName": "MinerU",
+  "description": "Parse PDF / Office / image files into clean Markdown via MinerU — zero-dependency, AI-Native, auto-routing Agent/Standard API with 15 content-tool delivery sinks.",
+  "author": { "name": "Nebutra", "email": "hello@nebutra.com" },
+  "license": "MIT",
+  "homepage": "https://github.com/Nebutra/MinerU-Skill",
+  "repository": "https://github.com/Nebutra/MinerU-Skill",
+  "keywords": ["pdf", "markdown", "ocr", "document-parser", "mineru"],
+  "skills": ["skills/mineru"]
+}

@@ -57,14 +57,10 @@ jobs:
           CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
         if: ${{ env.CLAWHUB_TOKEN != '' }}
         run: npm install -g clawhub || npx --yes clawhub --version
-      # Login + token are verified working (`✔ Logged in as @TsekaLuk`). Because the
-      # repo ships a Claude plugin manifest (.claude-plugin/plugin.json), ClawHub
-      # classifies it as a plugin and requires `package publish` with an
-      # `openclaw.plugin.json` manifest (OpenClaw-specific; not yet added). Until
-      # that manifest exists this step no-ops via continue-on-error so releases stay
-      # green. TODO: add openclaw.plugin.json, then drop continue-on-error.
+      # Verified end-to-end: `clawhub login` + `package publish` with the committed
+      # openclaw.plugin.json manifest publishes the bundle (dry-run confirmed). The
+      # publish job uses a fresh checkout, so `.` contains only committed files.
       - name: Publish to ClawHub
-        continue-on-error: true
         env:
           CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
           CLAWHUB_DISABLE_TELEMETRY: "1"
