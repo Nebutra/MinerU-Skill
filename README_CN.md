@@ -52,7 +52,7 @@ PDF 解析成干净的 Markdown，直接打到终端 —— 或者喂给你的 A
 
 ---
 
-## 🤝 如何与同类对比（实事求是）
+## 🤝 如何与同类对比
 
 MinerU Skill **不是新的解析引擎**，而是包装 [MinerU](https://github.com/opendatalab/MinerU) **云 API** 的零配置、零依赖、Agent 原生**便捷层**，外加 17 个开箱即用的投递集成。我们的精度**就是 MinerU 云端给的**（很强：MinerU2.5 在 OmniDocBench v1.5 得 **90.67**，2.5-Pro 在 v1.6 得 **95.69**）。我们的优势是 **DX、AI 原生、免 Token 零安装上手、投递广度**——**不是**最高精度，**也不是**离线方案。
 
