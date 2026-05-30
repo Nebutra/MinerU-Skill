@@ -4,7 +4,7 @@
 
 # MinerU Skill
 
-[![GitHub Release](https://img.shields.io/github/v/release/Nebutra/MinerU-Skill?include_prereleases)](https://github.com/Nebutra/MinerU-Skill/releases) [![Python](https://img.shields.io/badge/Python-3.8+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/) [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](requirements.txt) [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![ClawHub](https://img.shields.io/badge/ClawHub-Available-purple.svg)](https://clawhub.com)
+[![GitHub Release](https://img.shields.io/github/v/release/Nebutra/MinerU-Skill?include_prereleases)](https://github.com/Nebutra/MinerU-Skill/releases) [![Python](https://img.shields.io/badge/Python-3.8+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/) [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](requirements.txt) [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![Smithery](https://img.shields.io/badge/Smithery-Available-blue.svg)](https://smithery.ai/skills/nebutra/mineru-skill) [![ClawHub](https://img.shields.io/badge/ClawHub-Available-purple.svg)](https://clawhub.com)
 
 [![GitHub Stars](https://img.shields.io/github/stars/Nebutra/MinerU-Skill?style=social)](https://github.com/Nebutra/MinerU-Skill/stargazers) [![GitHub Forks](https://img.shields.io/github/forks/Nebutra/MinerU-Skill?style=social)](https://github.com/Nebutra/MinerU-Skill/network/members)
 
@@ -61,6 +61,12 @@ and never touch a config file.
 npx skills add Nebutra/MinerU-Skill
 ```
 Supported: Claude Code, Antigravity, Codex, Cursor, OpenClaw, Hermes Agent — and 35+ more.
+
+### Smithery
+
+[![Install in Smithery](https://img.shields.io/badge/Install%20in-Smithery-blue)](https://smithery.ai/skills/nebutra/mineru-skill)
+
+Browse and install from the Smithery skill registry: <https://smithery.ai/skills/nebutra/mineru-skill>
 
 ### OpenClaw
 
