@@ -20,3 +20,7 @@ jobs:
         run: python -m py_compile scripts/*.py scripts/sinks/*.py
       - name: Unit tests (offline, no network)
         run: python -m pytest -q
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+      - name: uv zero-install run (PEP 723 inline metadata)
+        run: uv run --script scripts/mineru.py --version

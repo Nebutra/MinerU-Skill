@@ -20,6 +20,13 @@
 python3 scripts/mineru.py https://cdn-mineru.openxlab.org.cn/demo/example.pdf --stdout
 ```
 
+Prefer [uv](https://docs.astral.sh/uv/)? The script ships [PEP 723](https://peps.python.org/pep-0723/)
+inline metadata, so uv runs it with a managed Python and zero install:
+
+```bash
+uv run scripts/mineru.py https://cdn-mineru.openxlab.org.cn/demo/example.pdf --stdout
+```
+
 That's it. No account. No API key. No dependencies. The free **Agent API** parses
 the PDF and streams clean Markdown straight to your terminal — or to your AI agent.
 
@@ -223,9 +230,12 @@ batch, DOCX/HTML/LaTeX):
 ```bash
 python3 -m pytest                            # fast unit suite (offline, no network)
 MINERU_LIVE=1 python3 -m pytest -m live -s   # real API + benchmark (no mocks)
+
+uv run --no-project --with pytest pytest -q  # same suite via uv (managed Python)
 ```
 
-Zero runtime dependencies — `scripts/mineru.py` is pure standard library.
+Zero runtime dependencies — `scripts/mineru.py` is pure standard library, and runs
+under either `python3` or `uv run` (PEP 723 inline metadata).
 
 ---
 

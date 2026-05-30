@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.8"
+# dependencies = []
+# ///
 """MinerU CLI — parse PDF / Office / image files into clean Markdown.
 
 Zero-dependency (Python standard library only) and AI-Native. The tool picks the

@@ -30,6 +30,17 @@ python3 scripts/mineru.py paper.pdf --json
 
 No `pip install`, no API key. The free **Agent API** handles files ≤ 10 MB / ≤ 20 pages.
 
+### Run with uv (zero-install, managed Python)
+
+`scripts/mineru.py` carries [PEP 723](https://peps.python.org/pep-0723/) inline
+metadata, so [uv](https://docs.astral.sh/uv/) runs it directly — no venv, no
+`pip install`, with a uv-managed interpreter:
+
+```bash
+uv run scripts/mineru.py paper.pdf --stdout       # zero-install run
+uv run --no-project --with pytest pytest -q       # dev suite via uv
+```
+
 ## Power mode (token) — large files, batches, extra formats
 
 ```bash

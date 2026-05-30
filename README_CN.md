@@ -20,6 +20,13 @@
 python3 scripts/mineru.py https://cdn-mineru.openxlab.org.cn/demo/example.pdf --stdout
 ```
 
+习惯用 [uv](https://docs.astral.sh/uv/)？脚本内置 [PEP 723](https://peps.python.org/pep-0723/)
+内联元数据，uv 可用托管的 Python 直接运行，免安装：
+
+```bash
+uv run scripts/mineru.py https://cdn-mineru.openxlab.org.cn/demo/example.pdf --stdout
+```
+
 就这一行。无需账号、无需 API Key、零依赖。免费的 **Agent 轻量解析 API** 会把
 PDF 解析成干净的 Markdown，直接打到终端 —— 或者喂给你的 AI Agent。
 
@@ -215,9 +222,12 @@ Agent API **无需 Token**。设置 Token 可解锁精准解析 API（大文件�
 ```bash
 python3 -m pytest                            # 快速单元测试（离线，无网络）
 MINERU_LIVE=1 python3 -m pytest -m live -s   # 真实 API + 基准测试（无 mock）
+
+uv run --no-project --with pytest pytest -q  # 用 uv 跑同一套测试（托管 Python）
 ```
 
-零运行时依赖 —— `scripts/mineru.py` 为纯标准库实现。
+零运行时依赖 —— `scripts/mineru.py` 为纯标准库实现，可用 `python3` 或
+`uv run` 运行（PEP 723 内联元数据）。
 
 ---
 
