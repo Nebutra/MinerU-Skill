@@ -1,6 +1,6 @@
-name: Publish Skill (on release)
+name: Publish Skill (on tag)
 
-# Fires when a GitHub Release is published (e.g. v3.0.0).
+# Fires on a version tag push (v*.*.*), e.g. v3.1.0 — see the trigger note below.
 #
 # Distribution model (see the maintenance matrix in the PR/notes):
 #   * Most registries AUTO-INDEX from the `main` branch on their own schedule
@@ -17,8 +17,13 @@ name: Publish Skill (on release)
 # outside CI.
 
 on:
-  release:
-    types: [published]
+  # Trigger on the tag push itself, NOT `release: published`. The release is
+  # created by release.yml using GITHUB_TOKEN, and releases created by
+  # GITHUB_TOKEN do not emit events that trigger other workflows — so a
+  # `release: published` trigger here never fires. Tag-push always fires.
+  push:
+    tags:
+      - "v*.*.*"
 
 permissions:
   contents: read
