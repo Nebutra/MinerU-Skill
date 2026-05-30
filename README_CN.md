@@ -81,6 +81,12 @@ MinerU Skill **不是新的解析引擎**，而是包装 [MinerU](https://github
 
 [![安装到 Smithery](https://img.shields.io/badge/安装到-Smithery-blue)](https://smithery.ai/skills/nebutra/mineru-skill)
 
+```bash
+npx -y skills add https://smithery.ai/skills/nebutra/mineru-skill
+```
+
+或打开[详情页](https://smithery.ai/skills/nebutra/mineru-skill)选择你的 Agent（Claude Code、Codex、Cursor、Windsurf 等 20+）。
+
 ### OpenClaw
 
 ```bash

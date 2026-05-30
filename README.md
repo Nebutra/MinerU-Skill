@@ -114,7 +114,11 @@ Supported: Claude Code, Antigravity, Codex, Cursor, OpenClaw, Hermes Agent — a
 
 [![Install in Smithery](https://img.shields.io/badge/Install%20in-Smithery-blue)](https://smithery.ai/skills/nebutra/mineru-skill)
 
-Browse and install from the Smithery skill registry: <https://smithery.ai/skills/nebutra/mineru-skill>
+```bash
+npx -y skills add https://smithery.ai/skills/nebutra/mineru-skill
+```
+
+Or open the [listing](https://smithery.ai/skills/nebutra/mineru-skill) and pick your agent (Claude Code, Codex, Cursor, Windsurf & 20+ more).
 
 ### OpenClaw
 
