@@ -39,11 +39,12 @@ jobs:
           mkdir -p dist
           zip -r dist/mineru-skill.zip \
             SKILL.md \
-            scripts/*.py \
+            scripts/ \
             references/ \
             LICENSE \
             README.md \
-            README_CN.md
+            README_CN.md \
+            -x '*/__pycache__/*'
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

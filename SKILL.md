@@ -86,7 +86,21 @@ INPUT...          One or more files, a directory, or a URL
 --json            Print machine-readable status to stdout
 --to SINK         Deliver into a content tool (repeatable); --list-sinks to enumerate
 --obsidian PATH   Shortcut for --to obsidian with this vault
+--engine          cloud | local | auto  (local/auto parse born-digital PDFs offline)
+--split           Split oversized PDFs past the page caps, parse parts, merge (needs pypdf)
+--chunk           Emit heading-aware RAG chunks (.chunks.json + --json)
+--doctor          Environment self-check and exit
 ```
+
+## MCP server
+
+Expose MinerU over MCP (zero-dependency stdio JSON-RPC) so an MCP host can call it:
+
+```bash
+python3 scripts/mineru_mcp.py
+```
+
+Tools: `mineru_parse`, `mineru_parse_to` (parse + deliver to sinks), `mineru_list_sinks`.
 
 ## Deliver into your tools (`--to`)
 

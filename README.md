@@ -63,7 +63,7 @@ Legend: ✅ yes · ⚠️ partial/qualified · ❌ no. "Same backend" = calls th
 
 | Tool | Type | Offline / self-host | Token-free start | Zero-install (no models) | Accuracy (best public benchmark) | Formula→LaTeX | Tables | Delivery to note/PKM tools | Native MCP |
 |---|---|---|---|---|---|---|---|---|---|
-| **MinerU Skill** (this) | Cloud wrapper (CLI/skill) | ❌ cloud-only | ✅ free Agent API | ✅ stdlib core | = MinerU cloud (90.67 OmniDocBench v1.5) | Good (MinerU) | Good (MinerU) | ✅ **17 sinks** | ❌ CLI only |
+| **MinerU Skill** (this) | Cloud wrapper (CLI/skill/MCP) | ⚠️ local for born-digital (`--engine local`) | ✅ free Agent API | ✅ stdlib core | = MinerU cloud (90.67 OmniDocBench v1.5) | Good (MinerU) | Good (MinerU) | ✅ **17 sinks** | ✅ zero-dep MCP |
 | MinerU engine (self-hosted) | Self-hosted engine | ✅ fully offline | ✅ (own HW) | ❌ multi-GB torch/VLM + weights | **90.67 / 95.69-Pro** OmniDocBench | Best (owns the model) | SOTA | ❌ | ✅ official MCP |
 | Official MinerU MCP | Cloud MCP (same backend) | ❌ cloud | ✅ free Flash tier | ⚠️ pip/uvx, no weights | = ours (same backend) | = ours | = ours | ❌ | ✅ first-party |
 | MinerU-Document-Explorer | Local knowledge engine + MCP | ✅ local core | ✅ (cloud parse optional) | ❌ Node + local models | retrieval-grade | n/a (reader) | n/a | ❌ (own index/wiki) | ✅ 15 tools |
@@ -207,7 +207,15 @@ python3 scripts/mineru.py scan.pdf --ocr --lang en --format docx --format latex
 | `--stdout` / `--json` | Markdown to stdout / machine status to stdout |
 | `--to SINK` | Deliver into a content tool (repeatable) — see below |
 | `--obsidian PATH` | Shortcut for `--to obsidian` with this vault |
+| `--engine` | `cloud` · `local` · `auto` — `local`/`auto` parse born-digital PDFs **offline** via `pymupdf4llm` |
+| `--split` | Slice oversized PDFs past the page caps, parse parts, merge (needs `pypdf`) |
+| `--chunk` / `--chunk-size` | Emit heading-aware RAG chunks (`.chunks.json` + `--json`) |
 | `--list-sinks` | List delivery targets and their required env vars |
+| `--doctor` | Environment self-check (Python, API, token, extras, sinks) |
+
+> **MCP server:** run `python3 scripts/mineru_mcp.py` to expose MinerU over MCP
+> (zero-dep stdio JSON-RPC) — tools `mineru_parse`, `mineru_parse_to`, `mineru_list_sinks`.
+> Optional extras: `pip install "mineru-skill[split]" "mineru-skill[local]"`.
 
 ---
 

@@ -53,7 +53,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
-__version__ = "3.0.0"
+__version__ = "3.1.0"
 
 # --------------------------------------------------------------------------- #
 # Constants (kept in sync with https://mineru.net/apiManage/docs)
