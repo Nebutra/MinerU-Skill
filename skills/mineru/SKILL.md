@@ -15,14 +15,14 @@ Parse PDF, Office, and image documents into structured Markdown via the MinerU A
 
 ```bash
 # Zero-config: no token, no install (free Agent API)
-python3 mineru.py ./document.pdf --output ./output/
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mineru.py" ./document.pdf --output ./output/
 
 # Pipe Markdown back to an agent
-python3 mineru.py ./document.pdf --stdout
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mineru.py" ./document.pdf --stdout
 
 # Power mode: token unlocks large files / batch / extra formats
 export MINERU_TOKEN="..."   # https://mineru.net/apiManage/token
-python3 mineru.py ./pdfs/ --output ./output/ --workers 8 --resume
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mineru.py" ./pdfs/ --output ./output/ --workers 8 --resume
 ```
 
 ## Features
