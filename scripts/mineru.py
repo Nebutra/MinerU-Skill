@@ -38,7 +38,9 @@ import http.client
 import json
 import os
 import random
+import re
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -1140,6 +1142,108 @@ def run_pipeline(sources, opts, *, token, output_dir, api, resume, poll_interval
 # --------------------------------------------------------------------------- #
 # Input expansion + CLI
 # --------------------------------------------------------------------------- #
+_IMG_REF = re.compile(r"(!\[[^\]]*\]\()([^)\s]+)(\))")
+
+
+def _load_splitter():
+    script_dir = str(Path(__file__).resolve().parent)
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
+    import splitter
+    return splitter
+
+
+def split_cap(token, api, override=None) -> int:
+    """Pages per part: explicit override, else the cap of the backend that will run."""
+    if override:
+        return override
+    if api == "standard" or (api == "auto" and token):
+        return STANDARD_MAX_PAGES
+    return AGENT_MAX_PAGES
+
+
+def _merge_parts(part_results, stem: str, final_dir: Path) -> tuple:
+    """Merge part Markdown + images into ``final_dir``; return (markdown, image_count)."""
+    images_dir = final_dir / "images"
+    bodies = []
+    image_count = 0
+    for n, res in enumerate(part_results, start=1):
+        if res.state != STATE_DONE or not res.markdown:
+            continue
+        part_md_dir = Path(res.markdown_path).parent if res.markdown_path else None
+        prefix = f"part{n:03d}_"
+
+        def repl(match, _dir=part_md_dir, _pfx=prefix):
+            nonlocal image_count
+            ref = match.group(2)
+            if ref.startswith("http://") or ref.startswith("https://") or _dir is None:
+                return match.group(0)
+            src = (_dir / ref)
+            if not src.is_file():
+                return match.group(0)
+            images_dir.mkdir(parents=True, exist_ok=True)
+            new_name = _pfx + Path(ref).name
+            (images_dir / new_name).write_bytes(src.read_bytes())
+            image_count += 1
+            return f"{match.group(1)}images/{new_name}{match.group(3)}"
+
+        bodies.append(_IMG_REF.sub(repl, res.markdown))
+    merged = ("\n\n---\n\n").join(bodies)
+    final_dir.mkdir(parents=True, exist_ok=True)
+    (final_dir / f"{stem}.md").write_text(merged, encoding="utf-8")
+    return merged, image_count
+
+
+def process_split(source, opts, *, token, output_dir, api, resume, timeout, cap):
+    """Split an oversized local PDF, parse each part, and merge. Returns a ParseResult,
+    or None when no split is needed (caller falls back to process_one)."""
+    if is_url(source) or suffix_of(source) != ".pdf":
+        return None
+    stem = safe_stem(source)
+    result = ParseResult(name=stem, source=source, modality="pdf")
+    try:
+        splitter = _load_splitter()
+        pages = splitter.pdf_page_count(source)
+    except Exception as exc:  # SplitError (pypdf missing) or unreadable PDF
+        result.state = STATE_FAILED
+        result.error = str(exc)
+        return result
+    if pages <= cap:
+        return None  # fits — let normal processing handle it
+
+    final_dir = output_dir / stem
+    if resume and (final_dir / f"{stem}.md").exists():
+        result.state = "skipped"
+        result.output_dir = str(final_dir)
+        result.markdown_path = str(final_dir / f"{stem}.md")
+        return result
+
+    started = time.monotonic()
+    with tempfile.TemporaryDirectory() as tmp:
+        parts = splitter.split_pdf(source, cap, tmp)
+        part_out = Path(tmp) / "out"
+        part_results = [
+            process_one(str(p), opts, token=token, output_dir=part_out,
+                        api=api, resume=False, timeout=timeout)
+            for p in parts
+        ]
+        failed = [r for r in part_results if r.state == STATE_FAILED]
+        if failed:
+            result.state = STATE_FAILED
+            result.error = f"part failed: {failed[0].error}"
+            return result
+        merged, n_images = _merge_parts(part_results, stem, final_dir)
+
+    result.state = STATE_DONE
+    result.api = part_results[0].api if part_results else api
+    result.output_dir = str(final_dir)
+    result.markdown_path = str(final_dir / f"{stem}.md")
+    result.markdown = merged
+    result.elapsed = round(time.monotonic() - started, 2)
+    result.task_id = f"split:{len(parts)}parts"
+    return result
+
+
 def expand_inputs(raw_inputs) -> list:
     """Expand directories into supported files; pass through URLs and files."""
     expanded = []
@@ -1191,6 +1295,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--list-sinks", action="store_true", help="List available delivery targets and exit")
     parser.add_argument("--chunk", action="store_true", help="Also emit heading-aware RAG chunks (JSON sidecar + --json)")
     parser.add_argument("--chunk-size", type=int, default=2000, help="Max characters per chunk (default: 2000)")
+    parser.add_argument("--split", action="store_true",
+                        help="Split oversized PDFs past the page caps, parse parts, merge (needs pypdf)")
+    parser.add_argument("--split-pages", type=int, help="Pages per split part (default: backend cap, 20 or 200)")
     parser.add_argument("--stdout", action="store_true", help="Print Markdown to stdout (single input)")
     parser.add_argument("--json", dest="as_json", action="store_true", help="Print machine-readable status to stdout")
     parser.add_argument("--timeout", type=int, default=600, help="Per-input timeout in seconds (default: 600)")
@@ -1320,11 +1427,20 @@ def main(argv=None) -> int:
 
     results: list = []
 
+    cap = split_cap(token, args.api, args.split_pages)
+
     def run(source):
-        res = process_one(
-            source, opts, token=token, output_dir=output_dir, api=args.api,
-            obsidian=None, resume=args.resume, timeout=args.timeout,
-        )
+        res = None
+        if args.split:
+            res = process_split(
+                source, opts, token=token, output_dir=output_dir, api=args.api,
+                resume=args.resume, timeout=args.timeout, cap=cap,
+            )
+        if res is None:
+            res = process_one(
+                source, opts, token=token, output_dir=output_dir, api=args.api,
+                obsidian=None, resume=args.resume, timeout=args.timeout,
+            )
         icon = {"done": "✅", "skipped": "⏭️", "failed": "❌"}.get(res.state, "•")
         timing = f" ({res.elapsed}s)" if res.elapsed else ""
         _log(

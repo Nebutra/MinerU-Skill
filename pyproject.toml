@@ -32,6 +32,7 @@ dev = [
 # Optional delivery sinks that rely on third-party libraries. The core and the
 # other 15 sinks remain zero-dependency; these are lazy-imported only when used.
 wps = ["html-for-docx>=1.1.5"]  # Markdown -> DOCX for the WPS / 金山文档 sink
+split = ["pypdf>=4.0.0"]        # split oversized PDFs past the API page caps
 # Roam uses the official (git-only) SDK for the peer-redirect/auth transport:
 #   pip install "roam-client @ git+https://github.com/Roam-Research/backend-sdks.git#subdirectory=python"
 roam = ["roam-client @ git+https://github.com/Roam-Research/backend-sdks.git#subdirectory=python"]
