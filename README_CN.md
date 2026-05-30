@@ -97,7 +97,7 @@ git clone https://github.com/Nebutra/MinerU-Skill.git ~/openclaw-skills/mineru/
 ### ClawHub
 
 ```bash
-clawhub install mineru
+clawhub install mineru-skill          # 或：openclaw skills install mineru-skill
 ```
 
 ### Claude Code / Cursor / Windsurf
