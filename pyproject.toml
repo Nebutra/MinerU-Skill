@@ -47,6 +47,7 @@ Issues = "https://github.com/Nebutra/MinerU-Skill/issues"
 
 [project.scripts]
 mineru-parse = "scripts.mineru:main"
+mineru-mcp = "scripts.mineru_mcp:main"
 
 [tool.ruff]
 line-length = 100
