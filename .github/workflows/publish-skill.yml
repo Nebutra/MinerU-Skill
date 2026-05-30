@@ -1,0 +1,76 @@
+name: Publish Skill (on release)
+
+# Fires when a GitHub Release is published (e.g. v3.0.0).
+#
+# Distribution model (see the maintenance matrix in the PR/notes):
+#   * Most registries AUTO-INDEX from the `main` branch on their own schedule
+#     and need NO step here — skills.sh, skillsmp, skillhub.club, lobehub,
+#     claudemarketplaces, smithery, the Tencent skillhub.cn mirror, and the
+#     Anthropic directory mirror all re-sync from GitHub once listed. They are
+#     intentionally omitted, not forgotten.
+#   * The only registry with a confirmed non-interactive publish CLI is ClawHub.
+#     Its step is GUARDED by a secret, so the whole thing no-ops until you add
+#     CLAWHUB_TOKEN — CI stays green out of the box.
+#
+# One-time human steps that cannot be automated (Anthropic plugin form,
+# awesome-claude-skills PR, first-time Smithery/LobeHub registration) are tracked
+# outside CI.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate skill
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The core tool is stdlib-only and tests import it via tests/conftest.py
+      # (sys.path), so we do NOT `pip install -e .` here (the project is not
+      # currently pip-installable). Just pytest; live tests are deselected by
+      # the `-m 'not live'` addopts in pyproject.toml.
+      - name: Install pytest
+        run: pip install pytest
+      - name: Unit tests (offline, no network)
+        run: python -m pytest -q
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+      - name: Smoke test CLI via uv (PEP 723 inline script, zero-install)
+        run: uv run --script scripts/mineru.py --version
+
+  publish-clawhub:
+    name: Publish to ClawHub (OpenClaw)
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Skips silently until CLAWHUB_TOKEN is added as a repository secret.
+      - name: Install ClawHub CLI
+        env:
+          CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
+        if: ${{ env.CLAWHUB_TOKEN != '' }}
+        run: npm install -g clawhub || npx --yes clawhub --version
+      # NOTE: the publish flags below follow ClawHub's documented example but are
+      # not fully verified. `continue-on-error` ensures a flag mismatch can never
+      # fail a release. Verify once with `clawhub skill publish --help`, then you
+      # can drop continue-on-error to make publish failures hard errors.
+      - name: Publish to ClawHub
+        continue-on-error: true
+        env:
+          CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
+          CLAWHUB_DISABLE_TELEMETRY: "1"
+        if: ${{ env.CLAWHUB_TOKEN != '' }}
+        run: |
+          clawhub login --token "$CLAWHUB_TOKEN"
+          clawhub skill publish ./ \
+            --slug nebutra/mineru-skill \
+            --name "MinerU" \
+            --version "${GITHUB_REF_NAME#v}" \
+            --changelog "Release ${GITHUB_REF_NAME}"
