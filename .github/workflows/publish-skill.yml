@@ -57,12 +57,9 @@ jobs:
           CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
         if: ${{ env.CLAWHUB_TOKEN != '' }}
         run: npm install -g clawhub || npx --yes clawhub --version
-      # NOTE: the publish flags below follow ClawHub's documented example but are
-      # not fully verified. `continue-on-error` ensures a flag mismatch can never
-      # fail a release. Verify once with `clawhub skill publish --help`, then you
-      # can drop continue-on-error to make publish failures hard errors.
+      # Publish flow verified live (login + these flags work). The slug must be a
+      # bare lowercase/hyphen token — ClawHub rejects an owner/slug with a slash.
       - name: Publish to ClawHub
-        continue-on-error: true
         env:
           CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
           CLAWHUB_DISABLE_TELEMETRY: "1"
@@ -70,7 +67,7 @@ jobs:
         run: |
           clawhub login --token "$CLAWHUB_TOKEN"
           clawhub skill publish ./ \
-            --slug nebutra/mineru-skill \
+            --slug mineru-skill \
             --name "MinerU" \
             --version "${GITHUB_REF_NAME#v}" \
             --changelog "Release ${GITHUB_REF_NAME}"
