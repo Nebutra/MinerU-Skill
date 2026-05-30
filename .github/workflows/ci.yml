@@ -14,5 +14,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install -r requirements.txt
-      - run: python -m py_compile scripts/*.py
+      - name: Install dev dependencies
+        run: pip install pytest
+      - name: Compile check
+        run: python -m py_compile scripts/*.py scripts/sinks/*.py
+      - name: Unit tests (offline, no network)
+        run: python -m pytest -q
