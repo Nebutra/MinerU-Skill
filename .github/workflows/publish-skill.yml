@@ -57,9 +57,11 @@ jobs:
           CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
         if: ${{ env.CLAWHUB_TOKEN != '' }}
         run: npm install -g clawhub || npx --yes clawhub --version
-      # Verified end-to-end: `clawhub login` + `package publish` with the committed
-      # openclaw.plugin.json manifest publishes the bundle (dry-run confirmed). The
-      # publish job uses a fresh checkout, so `.` contains only committed files.
+      # Verified end-to-end: updates the existing ClawHub skill tsekaluk/mineru-skill
+      # via `clawhub skill publish <skill-folder>`. The path must be ABSOLUTE, and
+      # skills/mineru has no plugin marker so ClawHub treats it as a skill (publishing
+      # the repo root fails — the Anthropic .claude-plugin manifest makes ClawHub
+      # demand `package publish`, which then collides with this existing skill slug).
       - name: Publish to ClawHub
         env:
           CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
@@ -67,9 +69,8 @@ jobs:
         if: ${{ env.CLAWHUB_TOKEN != '' }}
         run: |
           clawhub login --token "$CLAWHUB_TOKEN"
-          clawhub package publish . \
-            --family bundle-plugin \
-            --name mineru-skill \
-            --display-name "MinerU" \
+          clawhub skill publish "$PWD/skills/mineru" \
+            --slug mineru-skill \
+            --name "MinerU PDF Parser" \
             --version "${GITHUB_REF_NAME#v}" \
             --changelog "Release ${GITHUB_REF_NAME}"
