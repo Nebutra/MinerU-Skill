@@ -697,6 +697,7 @@ def process_one(
     resume: bool = False,
     poll_interval: float = 3,
     timeout: float = 600,
+    engine: str = "cloud",
 ) -> ParseResult:
     """Parse a single input end to end, choosing the backend and writing output."""
     stem = safe_stem(source)
@@ -708,6 +709,28 @@ def process_one(
         result.output_dir = str(output_dir / stem)
         result.markdown_path = str(output_dir / stem / f"{stem}.md")
         return result
+
+    if engine in ("local", "auto") and not is_url(source) and suffix_of(source) == ".pdf":
+        local = _load_local_engine()
+        use_local = engine == "local"
+        if engine == "auto" and local is not None:
+            try:
+                use_local = local.available() and local.is_born_digital(source)
+            except Exception:
+                use_local = False
+        if use_local and local is not None:
+            try:
+                markdown = local.parse_local(source)
+                md_path = write_markdown(stem, markdown, output_dir)
+                result.api = "local"
+                result.markdown = markdown
+                return _finalize(result, stem, output_dir, md_path, obsidian, started)
+            except Exception as exc:  # LocalEngineError or parse failure
+                if engine == "local":
+                    result.state = STATE_FAILED
+                    result.error = str(exc)
+                    return result
+                # auto: fall through to the cloud engine
 
     size_bytes = None
     if not is_url(source):
@@ -1153,6 +1176,18 @@ def _load_splitter():
     return splitter
 
 
+def _load_local_engine():
+    """Import the optional offline-engine module; return it or None."""
+    try:
+        script_dir = str(Path(__file__).resolve().parent)
+        if script_dir not in sys.path:
+            sys.path.insert(0, script_dir)
+        import local_engine
+        return local_engine
+    except Exception:  # pragma: no cover
+        return None
+
+
 def split_cap(token, api, override=None) -> int:
     """Pages per part: explicit override, else the cap of the backend that will run."""
     if override:
@@ -1194,7 +1229,7 @@ def _merge_parts(part_results, stem: str, final_dir: Path) -> tuple:
     return merged, image_count
 
 
-def process_split(source, opts, *, token, output_dir, api, resume, timeout, cap):
+def process_split(source, opts, *, token, output_dir, api, resume, timeout, cap, engine="cloud"):
     """Split an oversized local PDF, parse each part, and merge. Returns a ParseResult,
     or None when no split is needed (caller falls back to process_one)."""
     if is_url(source) or suffix_of(source) != ".pdf":
@@ -1224,7 +1259,7 @@ def process_split(source, opts, *, token, output_dir, api, resume, timeout, cap)
         part_out = Path(tmp) / "out"
         part_results = [
             process_one(str(p), opts, token=token, output_dir=part_out,
-                        api=api, resume=False, timeout=timeout)
+                        api=api, resume=False, timeout=timeout, engine=engine)
             for p in parts
         ]
         failed = [r for r in part_results if r.state == STATE_FAILED]
@@ -1270,7 +1305,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", "-o", default="./output", help="Output directory (default: ./output)")
     parser.add_argument("--token", help="MinerU API token (or set MINERU_TOKEN)")
     parser.add_argument("--api", choices=["auto", "agent", "standard"], default="auto",
-                        help="Backend selection (default: auto)")
+                        help="Cloud backend selection (default: auto)")
+    parser.add_argument("--engine", choices=["cloud", "local", "auto"], default="cloud",
+                        help="cloud (MinerU API) | local (offline pymupdf4llm, born-digital PDFs) | "
+                             "auto (local if the PDF has text, else cloud). Default: cloud")
     parser.add_argument("--model", choices=["pipeline", "vlm", "MinerU-HTML"], default="vlm",
                         help="Standard API model (default: vlm)")
     parser.add_argument("--format", dest="formats", action="append", default=[],
@@ -1431,15 +1469,15 @@ def main(argv=None) -> int:
 
     def run(source):
         res = None
-        if args.split:
+        if args.split and args.engine != "local":
             res = process_split(
                 source, opts, token=token, output_dir=output_dir, api=args.api,
-                resume=args.resume, timeout=args.timeout, cap=cap,
+                resume=args.resume, timeout=args.timeout, cap=cap, engine=args.engine,
             )
         if res is None:
             res = process_one(
                 source, opts, token=token, output_dir=output_dir, api=args.api,
-                obsidian=None, resume=args.resume, timeout=args.timeout,
+                obsidian=None, resume=args.resume, timeout=args.timeout, engine=args.engine,
             )
         icon = {"done": "✅", "skipped": "⏭️", "failed": "❌"}.get(res.state, "•")
         timing = f" ({res.elapsed}s)" if res.elapsed else ""
