@@ -1,9 +1,13 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "mineru-skill"
-version = "3.1.0"
+version = "3.2.0"
 description = "AI-Native, zero-dependency CLI that parses PDF/Office/image files into clean Markdown via MinerU (Agent + Standard APIs, auto-routing)"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
 requires-python = ">=3.8"
 authors = [
     {name = "Nebutra", email = "hello@nebutra.com"}
@@ -12,7 +16,6 @@ keywords = ["pdf", "markdown", "parser", "latex", "obsidian", "ai-skill", "ocr",
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
@@ -48,6 +51,9 @@ Issues = "https://github.com/Nebutra/MinerU-Skill/issues"
 [project.scripts]
 mineru-parse = "scripts.mineru:main"
 mineru-mcp = "scripts.mineru_mcp:main"
+
+[tool.setuptools.packages.find]
+include = ["scripts*"]
 
 [tool.ruff]
 line-length = 100

@@ -458,6 +458,66 @@ def test_http_429_retries_then_raises(monkeypatch):
     assert exc.value.code == 429
 
 
+def test_api_json_retries_retryable_business_code(router, monkeypatch):
+    monkeypatch.setattr(mineru, "_backoff_delay", lambda *a, **k: 0)
+    router.add(
+        "/file-urls/batch",
+        [
+            (200, _json_bytes({"code": -60009, "msg": "queue full"})),
+            (200, _ok({"batch_id": "B", "file_urls": []})),
+        ],
+        method="POST",
+    )
+
+    data = mineru._api_json("POST", f"{mineru.STANDARD_API}/file-urls/batch", token="t", payload={})
+
+    assert data["batch_id"] == "B"
+    posts = [c for c in router.calls if c[0] == "POST" and c[1].endswith("/file-urls/batch")]
+    assert len(posts) == 2
+
+
+def test_api_json_rejects_non_2xx_even_with_success_envelope(router):
+    router.add("/extract/task", [(403, _ok({"task_id": "SHOULD_NOT_PASS"}))], method="POST")
+
+    with pytest.raises(mineru.MinerUError) as exc:
+        mineru._api_json("POST", f"{mineru.STANDARD_API}/extract/task", token="t", payload={})
+
+    assert "HTTP 403" in str(exc.value)
+
+
+def test_api_json_does_not_retry_fatal_business_code(router, monkeypatch):
+    monkeypatch.setattr(mineru, "_backoff_delay", lambda *a, **k: 0)
+    router.add(
+        "/extract/task",
+        [(200, _json_bytes({"code": "A0202", "msg": "bad token"}))],
+        method="POST",
+    )
+
+    with pytest.raises(mineru.MinerUError) as exc:
+        mineru._api_json("POST", f"{mineru.STANDARD_API}/extract/task", token="bad", payload={})
+
+    assert exc.value.code == "A0202"
+    calls = [c for c in router.calls if c[0] == "POST" and c[1].endswith("/extract/task")]
+    assert len(calls) == 1
+
+
+def test_api_json_retryable_business_code_exhaustion_keeps_code(router, monkeypatch):
+    monkeypatch.setattr(mineru, "_backoff_delay", lambda *a, **k: 0)
+    router.add(
+        "/file-urls/batch",
+        [(200, _json_bytes({"code": -60009, "msg": "queue full"}))],
+        method="POST",
+    )
+
+    with pytest.raises(mineru.MinerUError) as exc:
+        mineru._api_json("POST", f"{mineru.STANDARD_API}/file-urls/batch", token="t", payload={})
+
+    assert exc.value.code == -60009
+    assert "queue is full" in str(exc.value)
+    calls = [c for c in router.calls if c[0] == "POST" and c[1].endswith("/file-urls/batch")]
+    assert len(calls) == mineru.RETRY_MAX_ATTEMPTS
+
+
 def test_http_network_error_retries_then_raises(monkeypatch):
     import urllib.error
 
@@ -491,6 +551,115 @@ def test_write_markdown_is_atomic(tmp_path):
     md = mineru.write_markdown("d", "# A\n", tmp_path)
     assert md.read_text() == "# A\n"
     assert not list((tmp_path / "d").glob(".*partial"))  # no leftover temp file
+
+
+def test_write_zip_rejects_path_traversal(tmp_path):
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("../pwn.md", "owned")
+
+    with pytest.raises(mineru.MinerUError):
+        mineru.write_zip("doc", buf.getvalue(), tmp_path / "out")
+
+    assert not (tmp_path / "pwn.md").exists()
+
+
+def test_put_file_streams_with_content_length(monkeypatch, tmp_path):
+    src = tmp_path / "upload.pdf"
+    src.write_bytes(b"x" * 1024)
+    seen = {}
+
+    def fake_http(method, url, *, headers=None, data=None, timeout=60):
+        seen["method"] = method
+        seen["headers"] = headers
+        seen["data"] = data
+        return 200, b""
+
+    monkeypatch.setattr(mineru, "_http", fake_http)
+
+    mineru._put_file("https://oss/upload", str(src))
+
+    assert seen["method"] == "PUT"
+    assert seen["headers"]["Content-Length"] == "1024"
+    assert "Content-Type" not in seen["headers"]
+    assert hasattr(seen["data"], "read")
+
+
+def test_send_once_redirect_rewinds_stream_body(monkeypatch):
+    reads = []
+
+    class FakeResponse:
+        version = 11
+
+        def __init__(self, status, location=None):
+            self.status = status
+            self._location = location
+
+        def read(self):
+            return b""
+
+        def getheader(self, name, default=None):
+            if name == "Location":
+                return self._location
+            return default
+
+    class FakeConn:
+        def __init__(self, response):
+            self.response = response
+            self.timeout = None
+
+        def request(self, method, path, body=None, headers=None):
+            reads.append(body.read() if hasattr(body, "read") else body)
+
+        def getresponse(self):
+            return self.response
+
+    conns = [
+        FakeConn(FakeResponse(307, "https://oss.example/upload2")),
+        FakeConn(FakeResponse(200)),
+    ]
+
+    def fake_get_conn(scheme, host, port, timeout):
+        return conns.pop(0), (scheme, host, port)
+
+    monkeypatch.setattr(mineru, "_get_conn", fake_get_conn)
+    body = BytesIO(b"payload")
+
+    status, _raw, _retry_after = mineru._send_once("PUT", "https://oss.example/upload", data=body)
+
+    assert status == 200
+    assert reads == [b"payload", b"payload"]
+
+
+def test_process_one_prechecks_standard_file_size(tmp_path):
+    huge = tmp_path / "huge.pdf"
+    with open(huge, "wb") as handle:
+        handle.truncate(mineru.STANDARD_MAX_BYTES + 1)
+
+    res = mineru.process_one(
+        str(huge), mineru.ParseOptions(), token="t",
+        output_dir=tmp_path / "out", api="standard",
+    )
+
+    assert res.state == "failed"
+    assert "200 MB" in res.error
+
+
+def test_precheck_empty_file_fails_before_submit(router, tmp_path):
+    empty = tmp_path / "empty.pdf"
+    empty.write_bytes(b"")
+
+    res = mineru.process_one(
+        str(empty),
+        mineru.ParseOptions(),
+        token=None,
+        output_dir=tmp_path / "out",
+        api="agent",
+    )
+
+    assert res.state == "failed"
+    assert "Empty file" in res.error
+    assert router.calls == []
 
 
 # --------------------------------------------------------------------------- #
@@ -587,6 +756,141 @@ def test_run_pipeline_true_batch_submit(router, tmp_path, monkeypatch):
     assert (tmp_path / "out" / "b" / "b.md").exists()
 
 
+def test_reserve_batch_rejects_file_url_count_mismatch(monkeypatch, tmp_path):
+    a = tmp_path / "a.pdf"
+    a.write_bytes(b"a")
+    b = tmp_path / "b.pdf"
+    b.write_bytes(b"b")
+    jobs = [
+        mineru._Job(str(a), "a", "standard", False, mineru.ParseResult("a", str(a)), data_id="a-0"),
+        mineru._Job(str(b), "b", "standard", False, mineru.ParseResult("b", str(b)), data_id="b-1"),
+    ]
+
+    def fake_api(method, url, *, token=None, payload=None, timeout=60):
+        assert len(payload["files"]) == 2
+        return {"batch_id": "B", "file_urls": ["https://oss/a"]}
+
+    monkeypatch.setattr(mineru, "_api_json", fake_api)
+
+    with pytest.raises(mineru.MinerUError) as exc:
+        mineru._reserve_batch(jobs, mineru.ParseOptions(), "t", timeout=11)
+
+    assert "upload URL" in str(exc.value)
+    assert all(not job.poll_id for job in jobs)
+
+
+def test_run_pipeline_passes_timeout_to_submit_upload_poll_and_download(monkeypatch, tmp_path):
+    pdf = tmp_path / "a.pdf"
+    pdf.write_bytes(b"%PDF")
+    seen = {"api": [], "upload": [], "download": []}
+
+    def fake_api(method, url, *, token=None, payload=None, timeout=60):
+        seen["api"].append((method, url, timeout))
+        if url.endswith("/file-urls/batch"):
+            return {"batch_id": "B", "file_urls": ["https://oss/a"]}
+        if url.endswith("/extract-results/batch/B"):
+            return {
+                "extract_result": [
+                    {
+                        "data_id": "a-0",
+                        "file_name": "a.pdf",
+                        "state": "done",
+                        "full_zip_url": "https://cdn/a.zip",
+                    }
+                ]
+            }
+        raise AssertionError(url)
+
+    def fake_put(upload_url, path, timeout=300):
+        seen["upload"].append(timeout)
+
+    def fake_download(url, dest, *, timeout=300):
+        seen["download"].append(timeout)
+        Path(dest).write_bytes(_make_zip("# A\n"))
+        return dest
+
+    monkeypatch.setattr(mineru, "_api_json", fake_api)
+    monkeypatch.setattr(mineru, "_put_file", fake_put)
+    monkeypatch.setattr(mineru, "_download_to_path", fake_download)
+
+    results = mineru.run_pipeline(
+        [str(pdf)],
+        mineru.ParseOptions(),
+        token="t",
+        output_dir=tmp_path / "out",
+        api="standard",
+        resume=False,
+        poll_interval=0,
+        timeout=7,
+        batch_size=50,
+        workers=1,
+    )
+
+    assert results[0].state == "done"
+    assert {timeout for _method, _url, timeout in seen["api"]} == {7}
+    assert seen["upload"] == [7]
+    assert seen["download"] == [7]
+
+
+def test_run_pipeline_batches_standard_urls(router, tmp_path, monkeypatch):
+    router.add(
+        "/extract/task/batch",
+        [(200, _ok({"batch_id": "UB"}))],
+        method="POST",
+    )
+    router.add(
+        "/extract-results/batch/UB",
+        [
+            (
+                200,
+                _ok(
+                    {
+                        "extract_result": [
+                            {
+                                "data_id": "u1-0",
+                                "file_name": "u1.pdf",
+                                "state": "done",
+                                "full_zip_url": "https://cdn/u1.zip",
+                            },
+                            {
+                                "data_id": "u2-1",
+                                "file_name": "u2.pdf",
+                                "state": "done",
+                                "full_zip_url": "https://cdn/u2.zip",
+                            },
+                        ]
+                    }
+                ),
+            )
+        ],
+    )
+
+    def fake_download(url, dest, *, timeout=300):
+        Path(dest).write_bytes(_make_zip(f"# {url[-6:]}\n"))
+        return dest
+
+    monkeypatch.setattr(mineru, "_download_to_path", fake_download)
+
+    results = mineru.run_pipeline(
+        ["https://x.com/u1.pdf", "https://x.com/u2.pdf"],
+        mineru.ParseOptions(),
+        token="t",
+        output_dir=tmp_path / "out",
+        api="standard",
+        resume=False,
+        poll_interval=0,
+        timeout=300,
+        batch_size=50,
+        workers=1,
+        want_markdown=True,
+    )
+
+    assert sorted(r.state for r in results) == ["done", "done"]
+    posts = [d for m, u, d in router.calls if m == "POST" and u.endswith("/extract/task/batch")]
+    assert len(posts) == 1
+    assert len(json.loads(posts[0].decode())["files"]) == 2
+
+
 def test_run_pipeline_isolates_per_file_failure(router, tmp_path):
     router.add(
         "/agent/parse/url",
@@ -618,6 +922,68 @@ def test_run_pipeline_isolates_per_file_failure(router, tmp_path):
     )
     # one bad file does not abort the batch
     assert sorted(r.state for r in results) == ["done", "failed"]
+
+
+def test_standard_failed_state_preserves_err_code_hint():
+    job = mineru._Job(
+        source="https://x.com/a.pdf",
+        stem="a",
+        api="standard",
+        is_url=True,
+        result=mineru.ParseResult(name="a", source="https://x.com/a.pdf"),
+    )
+
+    def fake_api(method, url, *, token=None, payload=None, timeout=60):
+        return {"state": "failed", "err_code": -60018, "err_msg": ""}
+
+    original = mineru._api_json
+    mineru._api_json = fake_api
+    try:
+        completed, failed = mineru._poll_group("task", "T", [job], "t")
+    finally:
+        mineru._api_json = original
+
+    assert completed == []
+    assert failed == [job]
+    assert "Daily parse quota" in job.result.error
+
+
+def test_duplicate_batch_file_names_do_not_share_name_fallback():
+    job1 = mineru._Job(
+        source="/a/dup.pdf",
+        stem="dup",
+        api="standard",
+        is_url=False,
+        result=mineru.ParseResult(name="dup", source="/a/dup.pdf"),
+        data_id="first",
+        file_name="dup.pdf",
+    )
+    job2 = mineru._Job(
+        source="/b/dup.pdf",
+        stem="dup",
+        api="standard",
+        is_url=False,
+        result=mineru.ParseResult(name="dup", source="/b/dup.pdf"),
+        data_id="second",
+        file_name="dup.pdf",
+    )
+
+    def fake_api(method, url, *, token=None, payload=None, timeout=60):
+        return {
+            "extract_result": [
+                {"file_name": "dup.pdf", "state": "done", "full_zip_url": "https://cdn/one.zip"}
+            ]
+        }
+
+    original = mineru._api_json
+    mineru._api_json = fake_api
+    try:
+        completed, failed = mineru._poll_group("batch", "B", [job1, job2], "t")
+    finally:
+        mineru._api_json = original
+
+    assert completed == []
+    assert failed == []
 
 
 def test_main_batch_routes_through_pipeline(router, tmp_path, capsys, monkeypatch):
@@ -657,3 +1023,144 @@ def test_main_batch_routes_through_pipeline(router, tmp_path, capsys, monkeypatc
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["done"] == 2 and payload["failed"] == 0
+
+
+def test_main_with_token_uses_standard_file_batch(router, tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("MINERU_TOKEN", "t")
+    a = tmp_path / "a.pdf"
+    a.write_bytes(b"%PDF a")
+    b = tmp_path / "b.pdf"
+    b.write_bytes(b"%PDF b")
+    router.add(
+        "/file-urls/batch",
+        [(200, _ok({"batch_id": "B", "file_urls": ["https://oss/a", "https://oss/b"]}))],
+        method="POST",
+    )
+    router.add("oss/a", [(200, b"")], method="PUT")
+    router.add("oss/b", [(200, b"")], method="PUT")
+    router.add(
+        "/extract-results/batch/B",
+        [
+            (
+                200,
+                _ok(
+                    {
+                        "extract_result": [
+                            {"data_id": "a-0", "file_name": "a.pdf", "state": "done", "full_zip_url": "https://cdn/a.zip"},
+                            {"data_id": "b-1", "file_name": "b.pdf", "state": "done", "full_zip_url": "https://cdn/b.zip"},
+                        ]
+                    }
+                ),
+            )
+        ],
+    )
+
+    def fake_download(url, dest, *, timeout=300):
+        Path(dest).write_bytes(_make_zip(f"# {url[-5:]}\n"))
+        return dest
+
+    monkeypatch.setattr(mineru, "_download_to_path", fake_download)
+
+    code = mineru.main(
+        [
+            str(a),
+            str(b),
+            "--output",
+            str(tmp_path / "out"),
+            "--workers",
+            "1",
+            "--poll-interval",
+            "0",
+            "--json",
+            "--quiet",
+        ]
+    )
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["done"] == 2
+    assert {item["api"] for item in payload["results"]} == {"standard"}
+    posts = [d for m, u, d in router.calls if m == "POST" and u.endswith("/file-urls/batch")]
+    assert len(posts) == 1
+    assert len(json.loads(posts[0].decode())["files"]) == 2
+
+
+def test_main_returns_nonzero_when_pipeline_has_any_failed_input(router, tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("MINERU_TOKEN", raising=False)
+    a = tmp_path / "ok.pdf"
+    a.write_bytes(b"%PDF ok")
+    b = tmp_path / "bad.pdf"
+    b.write_bytes(b"%PDF bad")
+    router.add(
+        "/agent/parse/file",
+        [
+            (200, _ok({"task_id": "OK", "file_url": "https://oss/ok"})),
+            (200, _ok({"task_id": "BAD", "file_url": "https://oss/bad"})),
+        ],
+        method="POST",
+    )
+    router.add("oss/", [(200, b"")], method="PUT")
+    router.add("/agent/parse/OK", [(200, _ok({"state": "done", "markdown_url": "https://cdn/ok.md"}))])
+    router.add("/agent/parse/BAD", [(200, _ok({"state": "failed", "err_code": -60010, "err_msg": "parse failed"}))])
+    router.add("cdn/ok.md", [(200, b"# OK\n")])
+
+    code = mineru.main(
+        [
+            str(a),
+            str(b),
+            "--output",
+            str(tmp_path / "out"),
+            "--workers",
+            "1",
+            "--poll-interval",
+            "0",
+            "--json",
+            "--quiet",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["done"] == 1
+    assert payload["failed"] == 1
+    assert code == 1
+
+
+def test_main_pipeline_stdout_prints_all_markdown(router, tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("MINERU_TOKEN", raising=False)
+    f1 = tmp_path / "one.pdf"
+    f1.write_bytes(b"%PDF one")
+    f2 = tmp_path / "two.pdf"
+    f2.write_bytes(b"%PDF two")
+    router.add(
+        "/agent/parse/file",
+        [
+            (200, _ok({"task_id": "S1", "file_url": "https://oss/s1"})),
+            (200, _ok({"task_id": "S2", "file_url": "https://oss/s2"})),
+        ],
+        method="POST",
+    )
+    router.add("oss/", [(200, b"")], method="PUT")
+    router.add("/agent/parse/S1", [(200, _ok({"state": "done", "markdown_url": "https://cdn/s1.md"}))])
+    router.add("/agent/parse/S2", [(200, _ok({"state": "done", "markdown_url": "https://cdn/s2.md"}))])
+    router.add("cdn/s1.md", [(200, b"# One\n")])
+    router.add("cdn/s2.md", [(200, b"# Two\n")])
+
+    code = mineru.main(
+        [
+            str(f1),
+            str(f2),
+            "--output",
+            str(tmp_path / "out"),
+            "--workers",
+            "1",
+            "--poll-interval",
+            "0",
+            "--stdout",
+            "--quiet",
+        ]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "# One\n" in out
+    assert "# Two\n" in out

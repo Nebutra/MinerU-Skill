@@ -1,6 +1,6 @@
 name: Publish Skill (on tag)
 
-# Fires on a version tag push (v*.*.*), e.g. v3.1.0 — see the trigger note below.
+# Fires on a version tag push (v*.*.*), e.g. v3.2.0 — see the trigger note below.
 #
 # Distribution model (see the maintenance matrix in the PR/notes):
 #   * Most registries AUTO-INDEX from the `main` branch on their own schedule

@@ -50,10 +50,10 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from io import BytesIO
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Optional
 
-__version__ = "3.1.0"
+__version__ = "3.2.0"
 
 # --------------------------------------------------------------------------- #
 # Constants (kept in sync with https://mineru.net/apiManage/docs)
@@ -79,6 +79,12 @@ RETRY_MAX_DELAY = 20.0                  # backoff ceiling
 DEFAULT_POLL_INTERVAL = 2.0             # seconds between status polls
 POLL_INTERVAL_CAP = 15.0                # adaptive backoff ceiling while polling
 DEFAULT_WORKERS = 8                     # decoupled submit/poll lifts the old thread-bound ceiling
+
+# Business-layer API codes that are worth a bounded retry. Authentication,
+# quota, and file-limit failures are intentionally absent: those need user action
+# or a different input, so retrying only burns time/quota.
+RETRYABLE_API_CODES = {-10001, -60001, -60007, -60009}
+FATAL_API_CODES = {"A0202", "A0211", -60005, -60006, -60017, -60018, -60019}
 
 # Input modalities MinerU understands, grouped so the CLI can report what it sees
 # and so support stays single-sourced. The Agent API additionally rejects HTML.
@@ -255,6 +261,17 @@ def error_hint(code) -> str:
     return f"API error (code {code})"
 
 
+def _result_error(data: dict, default: str = "Parse failed") -> str:
+    """Best available parse-task failure message, preserving documented codes."""
+    msg = data.get("err_msg") or data.get("msg")
+    code = data.get("err_code") or data.get("code")
+    if msg:
+        return msg
+    if code is not None:
+        return error_hint(code)
+    return default
+
+
 def choose_api(
     *,
     token: Optional[str],
@@ -277,6 +294,61 @@ def choose_api(
     if size_bytes is not None and size_bytes > AGENT_MAX_BYTES:
         return "standard"
     return "agent"
+
+
+def _pdf_page_count_if_available(source: str) -> Optional[int]:
+    """Best-effort local PDF page count.
+
+    The core stays zero-dependency, so this only runs when the optional ``pypdf``
+    module is installed. If it is unavailable or cannot read the PDF, callers
+    fall back to the API-side validation.
+    """
+    if is_url(source) or suffix_of(source) != ".pdf":
+        return None
+    try:
+        import pypdf  # type: ignore
+    except ImportError:
+        return None
+    try:
+        return len(pypdf.PdfReader(str(source)).pages)
+    except Exception:
+        return None
+
+
+def _precheck_limits(source: str, api_kind: str, opts: ParseOptions) -> Optional[str]:
+    """Return a local limit error, or ``None`` when submission is allowed."""
+    if is_url(source):
+        return None
+    try:
+        size = os.path.getsize(source)
+    except OSError as exc:
+        return str(exc)
+    if size <= 0:
+        return "Empty file — upload a valid file"
+    if api_kind == "standard" and size > STANDARD_MAX_BYTES:
+        return ERROR_HINTS[-60005]
+    if api_kind == "agent" and size > AGENT_MAX_BYTES:
+        return ERROR_HINTS[-30001]
+
+    # A page range may intentionally select a capped subset, so avoid rejecting
+    # locally unless we know the full document must be sent.
+    if opts.page_ranges:
+        return None
+    pages = _pdf_page_count_if_available(source)
+    if pages is None:
+        return None
+    if api_kind == "standard" and pages > STANDARD_MAX_PAGES:
+        return ERROR_HINTS[-60006]
+    if api_kind == "agent" and pages > AGENT_MAX_PAGES:
+        return ERROR_HINTS[-30003]
+    return None
+
+
+def _agent_page_limit_exceeded(source: str, opts: ParseOptions) -> bool:
+    if opts.page_ranges:
+        return False
+    pages = _pdf_page_count_if_available(source)
+    return pages is not None and pages > AGENT_MAX_PAGES
 
 
 # --------------------------------------------------------------------------- #
@@ -305,6 +377,12 @@ def _backoff_delay(attempt: int, retry_after=None) -> float:
 
 def _should_retry_status(status) -> bool:
     return status in RETRY_STATUSES
+
+
+def _is_retryable_api_error(exc: MinerUError) -> bool:
+    if exc.code in FATAL_API_CODES:
+        return False
+    return exc.code == 429 or exc.code in RETRYABLE_API_CODES
 
 
 def _conn_pool() -> dict:
@@ -339,6 +417,13 @@ def _get_conn(scheme, host, port, timeout):
     return conn, key
 
 
+def _content_length(data):
+    try:
+        return len(data)
+    except (TypeError, AttributeError):
+        return None
+
+
 def _send_once(method, url, *, headers=None, data=None, timeout=60, _redirects=5):
     """One HTTP request over a reused keep-alive connection.
 
@@ -351,7 +436,9 @@ def _send_once(method, url, *, headers=None, data=None, timeout=60, _redirects=5
     send_headers = dict(headers or {})
     send_headers.setdefault("User-Agent", USER_AGENT)
     if data is not None and "Content-Length" not in send_headers:
-        send_headers["Content-Length"] = str(len(data))
+        length = _content_length(data)
+        if length is not None:
+            send_headers["Content-Length"] = str(length)
 
     # Try once on the pooled (possibly stale) connection; on a connection-level
     # error reconnect once before surfacing it to the retry layer.
@@ -370,12 +457,22 @@ def _send_once(method, url, *, headers=None, data=None, timeout=60, _redirects=5
                     nxt = urllib.parse.urljoin(url, location)
                     nmethod = "GET" if status in (301, 302, 303) and method != "HEAD" else method
                     ndata = None if nmethod != method else data
+                    if ndata is not None and hasattr(ndata, "seek"):
+                        try:
+                            ndata.seek(0)
+                        except OSError:
+                            pass
                     return _send_once(nmethod, nxt, headers=headers, data=ndata,
                                       timeout=timeout, _redirects=_redirects - 1)
             return status, body, resp.getheader("Retry-After")
         except (http.client.HTTPException, ConnectionError, OSError) as exc:
             _drop_conn(key)
             if stale_attempt == 0:
+                if hasattr(data, "seek"):
+                    try:
+                        data.seek(0)
+                    except OSError:
+                        pass
                 continue  # pooled connection was stale — reconnect and retry once
             raise urllib.error.URLError(exc)
     raise urllib.error.URLError("connection failed")  # pragma: no cover - defensive
@@ -389,6 +486,11 @@ def _http(method, url, *, headers=None, data=None, timeout=60):
     the caller's concern in :func:`_api_json`.
     """
     for attempt in range(RETRY_MAX_ATTEMPTS):
+        if hasattr(data, "seek"):
+            try:
+                data.seek(0)
+            except OSError:
+                pass
         status = None
         retry_after = None
         last_exc = None
@@ -423,32 +525,39 @@ def _api_json(method, url, *, token=None, payload=None, timeout=60) -> dict:
         body = json.dumps(payload).encode("utf-8")
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    status, raw = _http(method, url, headers=headers, data=body, timeout=timeout)
-    try:
-        parsed = json.loads(raw.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
-        raise MinerUError(f"Non-JSON response (HTTP {status}) from {url}")
-    # MinerU returns two envelopes: the business layer uses {code, data, msg}
-    # while the auth/gateway layer uses {success, msgCode, msg} (e.g. on a bad
-    # token). Handle both so credential errors surface clearly.
-    if parsed.get("success") is False:
-        code = parsed.get("msgCode") or parsed.get("code")
-        hint = ERROR_HINTS.get(code) or parsed.get("msg") or error_hint(code)
-        raise MinerUError(hint, code=code)
-    code = parsed.get("code")
-    if code not in (0, None):
-        raise MinerUError(error_hint(code), code=code)
-    data = parsed.get("data")
-    if data is None and code is None and "success" not in parsed:
-        raise MinerUError(f"Unexpected response (HTTP {status}) from {url}")
-    return data or {}
+    for attempt in range(RETRY_MAX_ATTEMPTS):
+        status, raw = _http(method, url, headers=headers, data=body, timeout=timeout)
+        try:
+            parsed = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            raise MinerUError(f"Non-JSON response (HTTP {status}) from {url}")
+        # MinerU returns two envelopes: the business layer uses {code, data, msg}
+        # while the auth/gateway layer uses {success, msgCode, msg} (e.g. on a bad
+        # token). Handle both so credential errors surface clearly.
+        if parsed.get("success") is False:
+            code = parsed.get("msgCode") or parsed.get("code")
+            hint = ERROR_HINTS.get(code) or parsed.get("msg") or error_hint(code)
+            raise MinerUError(hint, code=code)
+        code = parsed.get("code")
+        if not (200 <= status < 300) and code in (0, None):
+            raise MinerUError(f"HTTP {status} from {url}", code=status)
+        if code not in (0, None):
+            if code in RETRYABLE_API_CODES and attempt + 1 < RETRY_MAX_ATTEMPTS:
+                time.sleep(_backoff_delay(attempt))
+                continue
+            raise MinerUError(error_hint(code), code=code)
+        data = parsed.get("data")
+        if data is None and code is None and "success" not in parsed:
+            raise MinerUError(f"Unexpected response (HTTP {status}) from {url}")
+        return data or {}
+    raise MinerUError(f"API retry exhausted for {url}")  # pragma: no cover - defensive
 
 
 def _put_file(upload_url: str, path: str, timeout=300) -> None:
     """Upload a local file to a signed OSS URL (no Content-Type per docs)."""
+    headers = {"Content-Length": str(os.path.getsize(path))}
     with open(path, "rb") as handle:
-        data = handle.read()
-    status, _ = _http("PUT", upload_url, data=data, timeout=timeout)
+        status, _ = _http("PUT", upload_url, headers=headers, data=handle, timeout=timeout)
     if status not in (200, 201, 203):
         raise MinerUError(f"Upload failed (HTTP {status})")
 
@@ -518,7 +627,7 @@ def agent_parse(source: str, opts: ParseOptions, *, poll_interval=3, timeout=600
         payload = {"file_name": Path(source).name, **_agent_payload(opts)}
         data = _api_json("POST", f"{AGENT_API}/parse/file", payload=payload)
         task_id = data["task_id"]
-        _put_file(data["file_url"], source)
+        _put_file(data["file_url"], source, timeout=timeout)
     markdown = _agent_poll(task_id, poll_interval=poll_interval, timeout=timeout)
     return markdown, task_id
 
@@ -526,10 +635,10 @@ def agent_parse(source: str, opts: ParseOptions, *, poll_interval=3, timeout=600
 def _agent_poll(task_id, *, poll_interval, timeout) -> str:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        data = _api_json("GET", f"{AGENT_API}/parse/{task_id}")
+        data = _api_json("GET", f"{AGENT_API}/parse/{task_id}", timeout=timeout)
         state = data.get("state")
         if state == STATE_DONE:
-            return _download(data["markdown_url"]).decode("utf-8", errors="replace")
+            return _download(data["markdown_url"], timeout=timeout).decode("utf-8", errors="replace")
         if state == STATE_FAILED:
             raise MinerUError(
                 data.get("err_msg") or error_hint(data.get("err_code")),
@@ -564,9 +673,10 @@ def standard_parse(
             payload["page_ranges"] = opts.page_ranges
         if opts.extra_formats:
             payload["extra_formats"] = list(opts.extra_formats)
-        data = _api_json("POST", f"{STANDARD_API}/extract/task", token=token, payload=payload)
+        data = _api_json("POST", f"{STANDARD_API}/extract/task", token=token,
+                         payload=payload, timeout=timeout)
         zip_url = _standard_poll_task(data["task_id"], token, poll_interval=poll_interval, timeout=timeout)
-        return _download(zip_url), data["task_id"]
+        return _download(zip_url, timeout=timeout), data["task_id"]
 
     # Local file: request a signed upload URL, PUT the bytes, then poll the batch.
     file_entry = {"name": Path(source).name, "data_id": safe_data_id(safe_stem(source))}
@@ -583,22 +693,24 @@ def standard_parse(
     }
     if opts.extra_formats:
         payload["extra_formats"] = list(opts.extra_formats)
-    data = _api_json("POST", f"{STANDARD_API}/file-urls/batch", token=token, payload=payload)
+    data = _api_json("POST", f"{STANDARD_API}/file-urls/batch", token=token,
+                     payload=payload, timeout=timeout)
     batch_id = data["batch_id"]
-    _put_file(data["file_urls"][0], source)
+    _put_file(data["file_urls"][0], source, timeout=timeout)
     zip_url = _standard_poll_batch(batch_id, token, Path(source).name, poll_interval=poll_interval, timeout=timeout)
-    return _download(zip_url), batch_id
+    return _download(zip_url, timeout=timeout), batch_id
 
 
 def _standard_poll_task(task_id, token, *, poll_interval, timeout) -> str:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        data = _api_json("GET", f"{STANDARD_API}/extract/task/{task_id}", token=token)
+        data = _api_json("GET", f"{STANDARD_API}/extract/task/{task_id}", token=token,
+                         timeout=timeout)
         state = data.get("state")
         if state == STATE_DONE:
             return data["full_zip_url"]
         if state == STATE_FAILED:
-            raise MinerUError(data.get("err_msg") or "Parse failed", code=None)
+            raise MinerUError(_result_error(data), code=data.get("err_code"))
         time.sleep(poll_interval)
     raise MinerUError("Standard parse timed out")
 
@@ -606,7 +718,8 @@ def _standard_poll_task(task_id, token, *, poll_interval, timeout) -> str:
 def _standard_poll_batch(batch_id, token, file_name, *, poll_interval, timeout) -> str:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        data = _api_json("GET", f"{STANDARD_API}/extract-results/batch/{batch_id}", token=token)
+        data = _api_json("GET", f"{STANDARD_API}/extract-results/batch/{batch_id}",
+                         token=token, timeout=timeout)
         for entry in data.get("extract_result", []):
             if entry.get("file_name") != file_name:
                 continue
@@ -614,7 +727,7 @@ def _standard_poll_batch(batch_id, token, file_name, *, poll_interval, timeout) 
             if state == STATE_DONE:
                 return entry["full_zip_url"]
             if state == STATE_FAILED:
-                raise MinerUError(entry.get("err_msg") or "Parse failed", code=None)
+                raise MinerUError(_result_error(entry), code=entry.get("err_code"))
         time.sleep(poll_interval)
     raise MinerUError("Standard parse timed out")
 
@@ -650,12 +763,28 @@ def _finalize_zip_dir(target_dir: Path, stem: str) -> Path:
     return md_path
 
 
+def _validate_zip_member(info: zipfile.ZipInfo) -> None:
+    name = info.filename
+    parts = PurePosixPath(name).parts
+    if PurePosixPath(name).is_absolute() or ".." in parts:
+        raise MinerUError(f"Unsafe zip member path: {name}")
+    file_type = (info.external_attr >> 16) & 0o170000
+    if file_type == 0o120000:
+        raise MinerUError(f"Unsafe zip symlink: {name}")
+
+
+def _safe_extract_zip(archive: zipfile.ZipFile, target_dir: Path) -> None:
+    for info in archive.infolist():
+        _validate_zip_member(info)
+    archive.extractall(target_dir)
+
+
 def write_zip(stem: str, zip_bytes: bytes, output_dir: Path) -> Path:
     """Extract a Standard API result zip and return the path to the renamed Markdown."""
     target_dir = output_dir / stem
     target_dir.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(BytesIO(zip_bytes)) as archive:
-        archive.extractall(target_dir)
+        _safe_extract_zip(archive, target_dir)
     return _finalize_zip_dir(target_dir, stem)
 
 
@@ -664,7 +793,7 @@ def extract_zip_path(stem: str, zip_path: Path, output_dir: Path) -> Path:
     target_dir = output_dir / stem
     target_dir.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(zip_path) as archive:
-        archive.extractall(target_dir)
+        _safe_extract_zip(archive, target_dir)
     return _finalize_zip_dir(target_dir, stem)
 
 
@@ -747,6 +876,15 @@ def process_one(
         extra_formats=opts.extra_formats,
         explicit=api,
     )
+    if chosen == "agent" and api == "auto" and token and _agent_page_limit_exceeded(source, opts):
+        chosen = "standard"
+
+    precheck_error = _precheck_limits(source, chosen, opts)
+    if precheck_error:
+        result.api = chosen
+        result.state = STATE_FAILED
+        result.error = precheck_error
+        return result
 
     try:
         result.api = chosen
@@ -838,7 +976,7 @@ class _Job:
     finished: bool = False     # resolved during planning/submit (skip or hard-fail)
 
 
-def _plan_jobs(sources, opts, *, token, output_dir, api, resume) -> list:
+def _plan_jobs(sources, opts, *, token, output_dir, api, resume, batch_mode=False) -> list:
     """Resolve each source's backend and short-circuit already-parsed inputs."""
     jobs = []
     for idx, src in enumerate(sources):
@@ -864,10 +1002,17 @@ def _plan_jobs(sources, opts, *, token, output_dir, api, resume) -> list:
             except OSError:
                 pass
         job.api = choose_api(
-            token=token, source=src, size_bytes=size_bytes, batch=False,
+            token=token, source=src, size_bytes=size_bytes, batch=batch_mode,
             extra_formats=opts.extra_formats, explicit=api,
         )
+        if job.api == "agent" and api == "auto" and token and _agent_page_limit_exceeded(src, opts):
+            job.api = "standard"
         res.api = job.api
+        precheck_error = _precheck_limits(src, job.api, opts)
+        if precheck_error:
+            res.state = STATE_FAILED
+            res.error = precheck_error
+            job.finished = True
         jobs.append(job)
     return jobs
 
@@ -879,12 +1024,13 @@ def _reserve_single(job, opts, token, timeout) -> list:
     if job.api == "agent":
         if job.is_url:
             data = _api_json("POST", f"{AGENT_API}/parse/url",
-                             payload={"url": src, **_agent_payload(opts)})
+                             payload={"url": src, **_agent_payload(opts)}, timeout=timeout)
             job.poll_kind, job.poll_id = "agent", data["task_id"]
             job.result.task_id = data["task_id"]
             return []
         data = _api_json("POST", f"{AGENT_API}/parse/file",
-                         payload={"file_name": Path(src).name, **_agent_payload(opts)})
+                         payload={"file_name": Path(src).name, **_agent_payload(opts)},
+                         timeout=timeout)
         job.poll_kind, job.poll_id = "agent", data["task_id"]
         job.result.task_id = data["task_id"]
         return [(job, data["file_url"])]
@@ -899,7 +1045,8 @@ def _reserve_single(job, opts, token, timeout) -> list:
         payload["page_ranges"] = opts.page_ranges
     if opts.extra_formats:
         payload["extra_formats"] = list(opts.extra_formats)
-    data = _api_json("POST", f"{STANDARD_API}/extract/task", token=token, payload=payload)
+    data = _api_json("POST", f"{STANDARD_API}/extract/task", token=token,
+                     payload=payload, timeout=timeout)
     job.poll_kind, job.poll_id = "task", data["task_id"]
     job.result.task_id = data["task_id"]
     return []
@@ -923,12 +1070,21 @@ def _reserve_batch(batch_jobs, opts, token, timeout) -> list:
     }
     if opts.extra_formats:
         payload["extra_formats"] = list(opts.extra_formats)
-    data = _api_json("POST", f"{STANDARD_API}/file-urls/batch", token=token, payload=payload)
+    data = _api_json("POST", f"{STANDARD_API}/file-urls/batch", token=token,
+                     payload=payload, timeout=timeout)
     batch_id = data["batch_id"]
     urls = data["file_urls"]
+    if len(urls) != len(batch_jobs):
+        raise MinerUError(
+            f"Batch upload URL count mismatch: requested {len(batch_jobs)}, got {len(urls)}"
+        )
     deadline = time.monotonic() + timeout
     uploads = []
     for job, url in zip(batch_jobs, urls):
+        if isinstance(url, dict):
+            url = url.get("url") or url.get("file_url") or url.get("upload_url")
+        if not url:
+            raise MinerUError(f"Missing upload URL for {job.file_name or job.source}")
         job.poll_kind, job.poll_id = "batch", batch_id
         job.result.task_id = batch_id
         job.deadline = deadline
@@ -936,8 +1092,36 @@ def _reserve_batch(batch_jobs, opts, token, timeout) -> list:
     return uploads
 
 
-def _chunk_standard_files(std_jobs, opts, batch_size) -> list:
-    """Group Standard-API local files into batches, splitting by model_version."""
+def _reserve_url_batch(batch_jobs, opts, token, timeout) -> list:
+    """Submit one Standard ``/extract/task/batch`` for URL inputs."""
+    model = _standard_model(opts, batch_jobs[0].source)
+    files = [{"url": job.source, "data_id": job.data_id} for job in batch_jobs]
+    payload = {"files": files, "model_version": model}
+    data = _api_json("POST", f"{STANDARD_API}/extract/task/batch", token=token,
+                     payload=payload, timeout=timeout)
+    batch_id = data["batch_id"]
+    deadline = time.monotonic() + timeout
+    for job in batch_jobs:
+        job.poll_kind, job.poll_id = "batch", batch_id
+        job.result.task_id = batch_id
+        job.deadline = deadline
+    return []
+
+
+def _can_batch_standard_urls(opts: ParseOptions) -> bool:
+    """URL batch endpoint has a narrower documented payload than single URL tasks."""
+    return (
+        not opts.is_ocr
+        and opts.enable_formula
+        and opts.enable_table
+        and opts.language == "ch"
+        and not opts.page_ranges
+        and not opts.extra_formats
+    )
+
+
+def _chunk_standard_jobs(std_jobs, opts, batch_size) -> list:
+    """Group Standard-API jobs into batches, splitting by model_version."""
     by_model: dict = {}
     for job in std_jobs:
         by_model.setdefault(_standard_model(opts, job.source), []).append(job)
@@ -949,39 +1133,51 @@ def _chunk_standard_files(std_jobs, opts, batch_size) -> list:
     return chunks
 
 
-def _poll_group(kind, poll_id, group, token):
+def _chunk_standard_files(std_jobs, opts, batch_size) -> list:
+    """Backward-compatible wrapper for tests/importers."""
+    return _chunk_standard_jobs(std_jobs, opts, batch_size)
+
+
+def _poll_group(kind, poll_id, group, token, *, timeout=60):
     """Poll one ticket; return ``(completed_jobs, failed_jobs)`` (state set on each)."""
     completed, failed = [], []
     if kind == "agent":
-        data = _api_json("GET", f"{AGENT_API}/parse/{poll_id}")
+        data = _api_json("GET", f"{AGENT_API}/parse/{poll_id}", timeout=timeout)
         job = group[0]
         state = data.get("state")
         if state == STATE_DONE:
             job.download_url, job.download_kind = data["markdown_url"], "md"
             completed.append(job)
         elif state == STATE_FAILED:
-            job.result.error = data.get("err_msg") or error_hint(data.get("err_code"))
+            job.result.error = _result_error(data)
             failed.append(job)
     elif kind == "task":
-        data = _api_json("GET", f"{STANDARD_API}/extract/task/{poll_id}", token=token)
+        data = _api_json("GET", f"{STANDARD_API}/extract/task/{poll_id}", token=token,
+                         timeout=timeout)
         job = group[0]
         state = data.get("state")
         if state == STATE_DONE:
             job.download_url, job.download_kind = data["full_zip_url"], "zip"
             completed.append(job)
         elif state == STATE_FAILED:
-            job.result.error = data.get("err_msg") or "Parse failed"
+            job.result.error = _result_error(data)
             failed.append(job)
     else:  # batch — one GET reports every file in the batch
-        data = _api_json("GET", f"{STANDARD_API}/extract-results/batch/{poll_id}", token=token)
+        data = _api_json("GET", f"{STANDARD_API}/extract-results/batch/{poll_id}",
+                         token=token, timeout=timeout)
         by_data, by_name = {}, {}
         for entry in data.get("extract_result", []):
             if entry.get("data_id"):
                 by_data[entry["data_id"]] = entry
             if entry.get("file_name"):
                 by_name.setdefault(entry["file_name"], entry)
+        group_name_counts = {}
         for job in group:
-            entry = by_data.get(job.data_id) or by_name.get(job.file_name)
+            group_name_counts[job.file_name] = group_name_counts.get(job.file_name, 0) + 1
+        for job in group:
+            entry = by_data.get(job.data_id)
+            if entry is None and group_name_counts.get(job.file_name) == 1:
+                entry = by_name.get(job.file_name)
             if not entry:
                 continue
             state = entry.get("state")
@@ -989,16 +1185,16 @@ def _poll_group(kind, poll_id, group, token):
                 job.download_url, job.download_kind = entry["full_zip_url"], "zip"
                 completed.append(job)
             elif state == STATE_FAILED:
-                job.result.error = entry.get("err_msg") or "Parse failed"
+                job.result.error = _result_error(entry)
                 failed.append(job)
     return completed, failed
 
 
-def _download_and_write(job, opts, output_dir, *, obsidian, want_markdown):
+def _download_and_write(job, opts, output_dir, *, obsidian, want_markdown, timeout=300):
     """Download a completed result, write it, and finalize the job's ParseResult."""
     try:
         if job.download_kind == "md":
-            markdown = _download(job.download_url).decode("utf-8", errors="replace")
+            markdown = _download(job.download_url, timeout=timeout).decode("utf-8", errors="replace")
             md_path = write_markdown(job.stem, markdown, output_dir)
             if want_markdown:
                 job.result.markdown = markdown
@@ -1006,7 +1202,7 @@ def _download_and_write(job, opts, output_dir, *, obsidian, want_markdown):
             target_dir = output_dir / job.stem
             target_dir.mkdir(parents=True, exist_ok=True)
             zip_path = target_dir / "._result.zip.partial"
-            _download_to_path(job.download_url, zip_path)
+            _download_to_path(job.download_url, zip_path, timeout=timeout)
             md_path = extract_zip_path(job.stem, zip_path, output_dir)
             try:
                 zip_path.unlink()
@@ -1022,7 +1218,7 @@ def _download_and_write(job, opts, output_dir, *, obsidian, want_markdown):
 
 
 def _poll_until_done(active, opts, token, output_dir, *, poll_interval, obsidian,
-                     want_markdown, download_pool, on_done):
+                     want_markdown, download_pool, on_done, timeout=60):
     """Decoupled poll loop: dispatch downloads as results complete; adaptive backoff."""
     groups: dict = {}
     for job in active:
@@ -1035,9 +1231,15 @@ def _poll_until_done(active, opts, token, output_dir, *, poll_interval, obsidian
         for poll_id in list(groups):
             kind, group = groups[poll_id]
             try:
-                completed, failed = _poll_group(kind, poll_id, group, token)
-            except MinerUError:
-                completed, failed = [], []  # transient poll error — try again next cycle
+                completed, failed = _poll_group(kind, poll_id, group, token, timeout=timeout)
+            except MinerUError as exc:
+                completed = []
+                if _is_retryable_api_error(exc):
+                    failed = []  # transient poll error — try again next cycle
+                else:
+                    failed = list(group)
+                    for job in failed:
+                        job.result.error = str(exc)
             for job in group:
                 if job in completed or job in failed:
                     continue
@@ -1051,7 +1253,7 @@ def _poll_until_done(active, opts, token, output_dir, *, poll_interval, obsidian
                 dl_futures.append(
                     download_pool.submit(
                         _download_and_write, job, opts, output_dir,
-                        obsidian=obsidian, want_markdown=want_markdown,
+                        obsidian=obsidian, want_markdown=want_markdown, timeout=timeout,
                     )
                 )
             for job in failed:
@@ -1077,8 +1279,9 @@ def run_pipeline(sources, opts, *, token, output_dir, api, resume, poll_interval
                  timeout, batch_size, workers, obsidian=None, want_markdown=False,
                  on_result=None) -> list:
     """Parse many inputs with decoupled submit/poll/download. Returns ParseResults."""
+    batch_mode = len(sources) > 1
     jobs = _plan_jobs(sources, opts, token=token, output_dir=output_dir,
-                      api=api, resume=resume)
+                      api=api, resume=resume, batch_mode=batch_mode)
     started = time.monotonic()
     for job in jobs:
         job.started = started
@@ -1094,7 +1297,14 @@ def run_pipeline(sources, opts, *, token, output_dir, api, resume, poll_interval
 
     pending = [j for j in jobs if not j.finished]
     std_files = [j for j in pending if j.api == "standard" and not j.is_url]
-    singles = [j for j in pending if not (j.api == "standard" and not j.is_url)]
+    std_urls = [j for j in pending if j.api == "standard" and j.is_url]
+    batchable_urls = std_urls if _can_batch_standard_urls(opts) else []
+    single_urls = [] if _can_batch_standard_urls(opts) else std_urls
+    single_url_ids = {id(j) for j in single_urls}
+    singles = [
+        j for j in pending
+        if j.api != "standard" or (j.is_url and id(j) in single_url_ids)
+    ]
 
     if not token:
         for job in pending:
@@ -1105,9 +1315,12 @@ def run_pipeline(sources, opts, *, token, output_dir, api, resume, poll_interval
                 job.finished = True
                 _notify(job)
         std_files = [j for j in std_files if not j.finished]
+        batchable_urls = [j for j in batchable_urls if not j.finished]
+        single_urls = [j for j in single_urls if not j.finished]
         singles = [j for j in singles if not j.finished]
 
-    batches = _chunk_standard_files(std_files, opts, batch_size)
+    file_batches = _chunk_standard_jobs(std_files, opts, batch_size)
+    url_batches = _chunk_standard_jobs(batchable_urls, opts, batch_size)
 
     with ThreadPoolExecutor(max_workers=workers) as submit_pool, \
             ThreadPoolExecutor(max_workers=workers) as download_pool:
@@ -1115,8 +1328,10 @@ def run_pipeline(sources, opts, *, token, output_dir, api, resume, poll_interval
         reserve = {}
         for job in singles:
             reserve[submit_pool.submit(_reserve_single, job, opts, token, timeout)] = ("single", job)
-        for chunk in batches:
+        for chunk in file_batches:
             reserve[submit_pool.submit(_reserve_batch, chunk, opts, token, timeout)] = ("batch", chunk)
+        for chunk in url_batches:
+            reserve[submit_pool.submit(_reserve_url_batch, chunk, opts, token, timeout)] = ("batch", chunk)
 
         uploads = []
         for future in as_completed(reserve):
@@ -1136,7 +1351,7 @@ def run_pipeline(sources, opts, *, token, output_dir, api, resume, poll_interval
         # Phase 2 — upload (parallel): PUT each reserved file to its signed URL.
         up_futures = {}
         for job, url in uploads:
-            up_futures[submit_pool.submit(_put_file, url, job.source)] = job
+            up_futures[submit_pool.submit(_put_file, url, job.source, timeout)] = job
         for future in as_completed(up_futures):
             job = up_futures[future]
             try:
@@ -1156,7 +1371,7 @@ def run_pipeline(sources, opts, *, token, output_dir, api, resume, poll_interval
             _poll_until_done(
                 active, opts, token, output_dir, poll_interval=poll_interval,
                 obsidian=obsidian, want_markdown=want_markdown,
-                download_pool=download_pool, on_done=_notify,
+                download_pool=download_pool, on_done=_notify, timeout=timeout,
             )
 
     return [job.result for job in jobs]
@@ -1548,22 +1763,9 @@ def main(argv=None) -> int:
         quiet=args.quiet,
     )
 
-    results: list = []
-
     cap = split_cap(token, args.api, args.split_pages)
 
-    def run(source):
-        res = None
-        if args.split and args.engine != "local":
-            res = process_split(
-                source, opts, token=token, output_dir=output_dir, api=args.api,
-                resume=args.resume, timeout=args.timeout, cap=cap, engine=args.engine,
-            )
-        if res is None:
-            res = process_one(
-                source, opts, token=token, output_dir=output_dir, api=args.api,
-                obsidian=None, resume=args.resume, timeout=args.timeout, engine=args.engine,
-            )
+    def log_result(res):
         icon = {"done": "✅", "skipped": "⏭️", "failed": "❌"}.get(res.state, "•")
         timing = f" ({res.elapsed}s)" if res.elapsed else ""
         _log(
@@ -1571,15 +1773,48 @@ def main(argv=None) -> int:
             + (f" — {res.error}" if res.error else ""),
             quiet=args.quiet,
         )
-        return res
 
-    if workers == 1:
-        results = [run(s) for s in sources]
+    results: list = []
+    use_pipeline = args.engine == "cloud" and not args.split and len(sources) > 1
+
+    if use_pipeline:
+        results = run_pipeline(
+            sources,
+            opts,
+            token=token,
+            output_dir=output_dir,
+            api=args.api,
+            resume=args.resume,
+            poll_interval=args.poll_interval,
+            timeout=args.timeout,
+            batch_size=args.batch_size,
+            workers=workers,
+            want_markdown=bool(args.to) or args.chunk or args.stdout,
+            on_result=log_result,
+        )
     else:
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(run, s): s for s in sources}
-            for future in as_completed(futures):
-                results.append(future.result())
+        def run(source):
+            res = None
+            if args.split and args.engine != "local":
+                res = process_split(
+                    source, opts, token=token, output_dir=output_dir, api=args.api,
+                    resume=args.resume, timeout=args.timeout, cap=cap, engine=args.engine,
+                )
+            if res is None:
+                res = process_one(
+                    source, opts, token=token, output_dir=output_dir, api=args.api,
+                    obsidian=None, resume=args.resume, timeout=args.timeout, engine=args.engine,
+                )
+            log_result(res)
+            return res
+
+        if workers == 1:
+            results = [run(s) for s in sources]
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {pool.submit(run, s): s for s in sources}
+                for future in as_completed(futures):
+                    results.append(future.result())
 
     done = [r for r in results if r.state == STATE_DONE]
     skipped = [r for r in results if r.state == "skipped"]
@@ -1615,7 +1850,7 @@ def main(argv=None) -> int:
     )
     if failed:
         _log("Failed: " + ", ".join(f"{r.name} ({r.error})" for r in failed), quiet=args.quiet)
-    return 1 if failed and not done else 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

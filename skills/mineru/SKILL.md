@@ -3,7 +3,7 @@ name: mineru
 description: An AI-Native skill for parsing PDF / Office / image files into Markdown with MinerU — a fast, zero-config document parser for AI agents. Works with NO token via the Agent API and auto-upgrades to the Standard API (token) for large files, batches, and DOCX/HTML/LaTeX export. Use when converting PDF/Word/PPT/Excel/image documents, extracting text/tables/formulas, running OCR, or batch processing.
 metadata:
   author: Nebutra
-  version: "3.1.0"
+  version: "3.2.0"
   argument-hint: <pdf-file-or-url>
 ---
 

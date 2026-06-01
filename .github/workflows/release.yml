@@ -21,7 +21,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install validation tooling
-        run: pip install pyyaml   # the skill itself is zero-dependency; pyyaml only parses SKILL.md frontmatter
+        run: pip install pyyaml build   # runtime stays zero-dependency; these are release-only tools
 
       - name: Validate Skill
         run: |
@@ -39,6 +39,8 @@ jobs:
           mkdir -p dist
           zip -r dist/mineru-skill.zip \
             SKILL.md \
+            skills/mineru/ \
+            .claude-plugin/ \
             scripts/ \
             references/ \
             LICENSE \
@@ -46,11 +48,33 @@ jobs:
             README_CN.md \
             -x '*/__pycache__/*'
 
+      - name: Build Python distribution
+        run: python -m build
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: mineru-skill-release
           path: dist/
+
+  publish-pypi:
+    name: Publish Python Distribution
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: mineru-skill-release
+          path: dist/
+
+      - name: Publish to PyPI
+        if: ${{ env.PYPI_API_TOKEN != '' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
 
   release:
     name: Create Release

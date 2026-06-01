@@ -15,11 +15,13 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install dev dependencies
-        run: pip install pytest
+        run: pip install pytest build
       - name: Compile check
         run: python -m py_compile scripts/*.py scripts/sinks/*.py
       - name: Unit tests (offline, no network)
         run: python -m pytest -q
+      - name: Build package
+        run: python -m build
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
       - name: uv zero-install run (PEP 723 inline metadata)
