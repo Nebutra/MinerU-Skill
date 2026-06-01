@@ -337,21 +337,25 @@ def test_process_one_resume_skips_existing(tmp_path):
     assert res.state == "skipped"
 
 
-def test_process_one_auto_escalates_to_standard(router, tmp_path):
+def test_process_one_auto_escalates_to_standard(router, tmp_path, monkeypatch):
     pdf = tmp_path / "big.pdf"
     pdf.write_bytes(b"%PDF small-but-many-pages")
-    zip_bytes = _make_zip("# Escalated\n")
     # Agent path fails with a page-limit error.
     router.add("/agent/parse/file", [(200, _ok({"task_id": "E1", "file_url": "https://oss/e"}))])
     router.add("oss/e", [(200, b"")], method="PUT")
     router.add("/agent/parse/E1", [(200, _ok({"state": "failed", "err_code": -30003, "err_msg": "pages"}))])
-    # Standard path succeeds.
+    # Standard path succeeds; the result zip is now streamed to disk, not buffered.
     router.add("/file-urls/batch", [(200, _ok({"batch_id": "E2", "file_urls": ["https://oss/e2"]}))])
     router.add("oss/e2", [(200, b"")], method="PUT")
     router.add("/extract-results/batch/E2", [
         (200, _ok({"extract_result": [{"file_name": "big.pdf", "state": "done", "full_zip_url": "https://cdn/e.zip"}]})),
     ])
-    router.add("cdn/e.zip", [(200, zip_bytes)])
+
+    def fake_download(url, dest, *, timeout=300):
+        Path(dest).write_bytes(_make_zip("# Escalated\n"))
+        return dest
+
+    monkeypatch.setattr(mineru, "_download_to_path", fake_download)
 
     res = mineru.process_one(
         str(pdf), mineru.ParseOptions(), token="t",

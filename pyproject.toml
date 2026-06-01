@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mineru-skill"
-version = "3.2.0"
+version = "3.3.0"
 description = "AI-Native, zero-dependency CLI that parses PDF/Office/image files into clean Markdown via MinerU (Agent + Standard APIs, auto-routing)"
 readme = "README.md"
 license = "MIT"

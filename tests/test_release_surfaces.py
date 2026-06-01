@@ -10,7 +10,7 @@ import mineru
 
 
 ROOT = Path(__file__).resolve().parents[1]
-TARGET_VERSION = "3.2.0"
+TARGET_VERSION = "3.3.0"
 
 
 def _read(path: str) -> str:
@@ -23,8 +23,8 @@ def test_version_surfaces_are_synced_for_release():
     plugin = json.loads(_read(".claude-plugin/plugin.json"))
 
     assert mineru.__version__ == TARGET_VERSION
-    assert re.search(r'^version = "3\.2\.0"$', pyproject, re.MULTILINE)
-    assert re.search(r'^\s+version: "3\.2\.0"$', skill, re.MULTILINE)
+    assert re.search(r'^version = "3\.3\.0"$', pyproject, re.MULTILINE)
+    assert re.search(r'^\s+version: "3\.3\.0"$', skill, re.MULTILINE)
     assert plugin["version"] == TARGET_VERSION
 
 

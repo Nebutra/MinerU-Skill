@@ -53,7 +53,7 @@ from io import BytesIO
 from pathlib import Path, PurePosixPath
 from typing import Optional
 
-__version__ = "3.2.0"
+__version__ = "3.3.0"
 
 # --------------------------------------------------------------------------- #
 # Constants (kept in sync with https://mineru.net/apiManage/docs)
@@ -79,12 +79,21 @@ RETRY_MAX_DELAY = 20.0                  # backoff ceiling
 DEFAULT_POLL_INTERVAL = 2.0             # seconds between status polls
 POLL_INTERVAL_CAP = 15.0                # adaptive backoff ceiling while polling
 DEFAULT_WORKERS = 8                     # decoupled submit/poll lifts the old thread-bound ceiling
+# Cap for poll/submit network calls. A single stalled request must not wedge the
+# single-threaded poll loop for the whole per-parse budget — that budget lives in
+# job.deadline; the per-request socket timeout is bounded here. Downloads/uploads
+# (large zips) keep the full timeout.
+REQUEST_TIMEOUT_CAP = 30.0
 
 # Business-layer API codes that are worth a bounded retry. Authentication,
 # quota, and file-limit failures are intentionally absent: those need user action
 # or a different input, so retrying only burns time/quota.
 RETRYABLE_API_CODES = {-10001, -60001, -60007, -60009}
 FATAL_API_CODES = {"A0202", "A0211", -60005, -60006, -60017, -60018, -60019}
+# Daily-quota / retry-limit codes. Once any submit hits one of these the whole run
+# is doomed for the day, so trip a circuit breaker and skip the remaining submits
+# instead of firing N more doomed requests (FREE_DAILY_PAGES informs the message).
+QUOTA_EXHAUSTED_CODES = {-60017, -60018, -60019}
 
 # Input modalities MinerU understands, grouped so the CLI can report what it sees
 # and so support stays single-sourced. The Agent API additionally rejects HTML.
@@ -214,6 +223,24 @@ def safe_stem(source: str) -> str:
     name = tail.rsplit("/", 1)[-1] if is_url(source) else Path(source).name
     stem = Path(name).stem or "document"
     return stem
+
+
+def unique_out_stems(sources) -> list:
+    """On-disk folder/file stem per source, disambiguated ONLY on collision.
+
+    Distinct basenames keep their bare stem (the documented output-dir contract).
+    When two inputs share a basename (``a/report.pdf`` + ``b/report.pdf``) the
+    later ones get a ``-2``/``-3`` suffix so neither silently overwrites the other
+    on disk or via ``--resume``. Stable for a given input order, so resume keeps
+    matching across re-runs.
+    """
+    out, seen = [], {}
+    for src in sources:
+        base = safe_stem(src)
+        n = seen.get(base, 0)
+        seen[base] = n + 1
+        out.append(base if n == 0 else f"{base}-{n + 1}")
+    return out
 
 
 def safe_data_id(stem: str) -> str:
@@ -373,6 +400,15 @@ def _backoff_delay(attempt: int, retry_after=None) -> float:
             pass
     ceiling = min(RETRY_MAX_DELAY, RETRY_BASE_DELAY * (2 ** attempt))
     return ceiling * (0.5 + random.random() / 2)  # jitter in [0.5x, 1.0x]
+
+
+def _next_poll_interval(interval, *, progressed, base) -> float:
+    """Adaptive poll backoff for ONE group: reset to ``base`` on progress, else
+    grow geometrically toward ``POLL_INTERVAL_CAP``. Kept per-group so a fast batch
+    cannot reset (or a stuck batch inflate) the polling cadence of an unrelated one."""
+    if progressed:
+        return base
+    return min(interval * 1.5, POLL_INTERVAL_CAP)
 
 
 def _should_retry_status(status) -> bool:
@@ -655,11 +691,15 @@ def _standard_model(opts: ParseOptions, source: str) -> str:
     return "MinerU-HTML" if is_html(source) else opts.model
 
 
-def standard_parse(
-    source: str, opts: ParseOptions, token: str, *, poll_interval=3, timeout=600
-):
-    """Parse one URL or file via the Standard API. Returns zip bytes of the result."""
+def _standard_submit_and_poll(source, opts, token, *, poll_interval=3, timeout=600):
+    """Submit one URL/file to the Standard API and poll to completion.
+
+    Returns ``(full_zip_url, task_or_batch_id)`` — the caller decides whether to
+    buffer (small) or stream (large) the result zip. The submit POST uses a capped
+    socket timeout; the full ``timeout`` stays the parse budget for polling.
+    """
     model = _standard_model(opts, source)
+    req_timeout = min(timeout, REQUEST_TIMEOUT_CAP)
     if is_url(source):
         payload = {
             "url": source,
@@ -674,9 +714,9 @@ def standard_parse(
         if opts.extra_formats:
             payload["extra_formats"] = list(opts.extra_formats)
         data = _api_json("POST", f"{STANDARD_API}/extract/task", token=token,
-                         payload=payload, timeout=timeout)
+                         payload=payload, timeout=req_timeout)
         zip_url = _standard_poll_task(data["task_id"], token, poll_interval=poll_interval, timeout=timeout)
-        return _download(zip_url, timeout=timeout), data["task_id"]
+        return zip_url, data["task_id"]
 
     # Local file: request a signed upload URL, PUT the bytes, then poll the batch.
     file_entry = {"name": Path(source).name, "data_id": safe_data_id(safe_stem(source))}
@@ -694,18 +734,47 @@ def standard_parse(
     if opts.extra_formats:
         payload["extra_formats"] = list(opts.extra_formats)
     data = _api_json("POST", f"{STANDARD_API}/file-urls/batch", token=token,
-                     payload=payload, timeout=timeout)
+                     payload=payload, timeout=req_timeout)
     batch_id = data["batch_id"]
     _put_file(data["file_urls"][0], source, timeout=timeout)
     zip_url = _standard_poll_batch(batch_id, token, Path(source).name, poll_interval=poll_interval, timeout=timeout)
-    return _download(zip_url, timeout=timeout), batch_id
+    return zip_url, batch_id
+
+
+def standard_parse(
+    source: str, opts: ParseOptions, token: str, *, poll_interval=3, timeout=600
+):
+    """Parse one URL or file via the Standard API. Returns ``(zip_bytes, id)``."""
+    zip_url, task_id = _standard_submit_and_poll(
+        source, opts, token, poll_interval=poll_interval, timeout=timeout
+    )
+    return _download(zip_url, timeout=timeout), task_id
+
+
+def _standard_parse_to_dir(source, opts, token, out_stem, output_dir, *, poll_interval=3, timeout=600):
+    """Standard parse of a single input, streaming the result zip to disk rather
+    than buffering the whole archive in RAM. Returns ``(md_path, id)``."""
+    zip_url, task_id = _standard_submit_and_poll(
+        source, opts, token, poll_interval=poll_interval, timeout=timeout
+    )
+    target_dir = output_dir / out_stem
+    target_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = target_dir / "._result.zip.partial"
+    _download_to_path(zip_url, zip_path, timeout=timeout)
+    md_path = extract_zip_path(out_stem, zip_path, output_dir)
+    try:
+        zip_path.unlink()
+    except OSError:
+        pass
+    return md_path, task_id
 
 
 def _standard_poll_task(task_id, token, *, poll_interval, timeout) -> str:
     deadline = time.monotonic() + timeout
+    req_timeout = min(timeout, REQUEST_TIMEOUT_CAP)
     while time.monotonic() < deadline:
         data = _api_json("GET", f"{STANDARD_API}/extract/task/{task_id}", token=token,
-                         timeout=timeout)
+                         timeout=req_timeout)
         state = data.get("state")
         if state == STATE_DONE:
             return data["full_zip_url"]
@@ -717,9 +786,10 @@ def _standard_poll_task(task_id, token, *, poll_interval, timeout) -> str:
 
 def _standard_poll_batch(batch_id, token, file_name, *, poll_interval, timeout) -> str:
     deadline = time.monotonic() + timeout
+    req_timeout = min(timeout, REQUEST_TIMEOUT_CAP)
     while time.monotonic() < deadline:
         data = _api_json("GET", f"{STANDARD_API}/extract-results/batch/{batch_id}",
-                         token=token, timeout=timeout)
+                         token=token, timeout=req_timeout)
         for entry in data.get("extract_result", []):
             if entry.get("file_name") != file_name:
                 continue
@@ -751,15 +821,20 @@ def write_markdown(stem: str, markdown: str, output_dir: Path) -> Path:
 
 
 def _finalize_zip_dir(target_dir: Path, stem: str) -> Path:
-    """Rename the archive's ``full.md`` (or any ``*.md``) to ``<stem>.md``."""
+    """Rename the archive's ``full.md`` to ``<stem>.md``.
+
+    With no ``full.md`` (and no already-correct ``<stem>.md``), pick the largest
+    ``*.md`` — the most likely full body — tie-broken by name, so the choice is
+    deterministic instead of filesystem ``glob`` order.
+    """
     full_md = target_dir / "full.md"
     md_path = target_dir / f"{stem}.md"
     if full_md.exists():
         full_md.replace(md_path)
     elif not md_path.exists():
-        found = next(iter(target_dir.glob("*.md")), None)
-        if found:
-            found.replace(md_path)
+        candidates = sorted(target_dir.glob("*.md"), key=lambda p: (-p.stat().st_size, p.name))
+        if candidates:
+            candidates[0].replace(md_path)
     return md_path
 
 
@@ -827,16 +902,18 @@ def process_one(
     poll_interval: float = 3,
     timeout: float = 600,
     engine: str = "cloud",
+    out_stem: Optional[str] = None,
 ) -> ParseResult:
     """Parse a single input end to end, choosing the backend and writing output."""
     stem = safe_stem(source)
+    out_stem = out_stem or stem  # on-disk identity (disambiguated by the caller on collision)
     result = ParseResult(name=stem, source=source, modality=detect_modality(source))
     started = time.monotonic()
 
-    if resume and (output_dir / stem / f"{stem}.md").exists():
+    if resume and (output_dir / out_stem / f"{out_stem}.md").exists():
         result.state = "skipped"
-        result.output_dir = str(output_dir / stem)
-        result.markdown_path = str(output_dir / stem / f"{stem}.md")
+        result.output_dir = str(output_dir / out_stem)
+        result.markdown_path = str(output_dir / out_stem / f"{out_stem}.md")
         return result
 
     if engine in ("local", "auto") and not is_url(source) and suffix_of(source) == ".pdf":
@@ -850,10 +927,10 @@ def process_one(
         if use_local and local is not None:
             try:
                 markdown = local.parse_local(source)
-                md_path = write_markdown(stem, markdown, output_dir)
+                md_path = write_markdown(out_stem, markdown, output_dir)
                 result.api = "local"
                 result.markdown = markdown
-                return _finalize(result, stem, output_dir, md_path, obsidian, started)
+                return _finalize(result, out_stem, output_dir, md_path, obsidian, started)
             except Exception as exc:  # LocalEngineError or parse failure
                 if engine == "local":
                     result.state = STATE_FAILED
@@ -894,11 +971,11 @@ def process_one(
                     "Standard API needs a token — set MINERU_TOKEN "
                     "(https://mineru.net/apiManage/token)"
                 )
-            zip_bytes, task_id = standard_parse(
-                source, opts, token, poll_interval=poll_interval, timeout=timeout
+            md_path, task_id = _standard_parse_to_dir(
+                source, opts, token, out_stem, output_dir,
+                poll_interval=poll_interval, timeout=timeout
             )
             result.task_id = task_id
-            md_path = write_zip(stem, zip_bytes, output_dir)
             result.markdown = md_path.read_text(encoding="utf-8") if md_path.exists() else ""
         else:
             try:
@@ -909,18 +986,18 @@ def process_one(
                 # Auto-escalate to the Standard API when a token is available.
                 if api == "auto" and token and exc.code in AGENT_ESCALATABLE:
                     result.api = "standard"
-                    zip_bytes, task_id = standard_parse(
-                        source, opts, token, poll_interval=poll_interval, timeout=timeout
+                    md_path, task_id = _standard_parse_to_dir(
+                        source, opts, token, out_stem, output_dir,
+                        poll_interval=poll_interval, timeout=timeout
                     )
                     result.task_id = task_id
-                    md_path = write_zip(stem, zip_bytes, output_dir)
                     result.markdown = md_path.read_text(encoding="utf-8") if md_path.exists() else ""
-                    return _finalize(result, stem, output_dir, md_path, obsidian, started)
+                    return _finalize(result, out_stem, output_dir, md_path, obsidian, started)
                 raise
             result.task_id = task_id
-            md_path = write_markdown(stem, markdown, output_dir)
+            md_path = write_markdown(out_stem, markdown, output_dir)
             result.markdown = markdown
-        return _finalize(result, stem, output_dir, md_path, obsidian, started)
+        return _finalize(result, out_stem, output_dir, md_path, obsidian, started)
     except MinerUError as exc:
         result.state = STATE_FAILED
         result.error = str(exc)
@@ -935,14 +1012,20 @@ def process_one(
         return result
 
 
-def _finalize(result, stem, output_dir, md_path, obsidian, started=None) -> ParseResult:
+def _finalize(result, out_stem, output_dir, md_path, obsidian, started=None) -> ParseResult:
+    # A result that yielded no markdown on disk is a failure, not a silent "done"
+    # pointing at a nonexistent/empty body.
+    if md_path is None or not Path(md_path).exists():
+        result.state = STATE_FAILED
+        result.error = result.error or "no markdown in result"
+        return result
     result.state = STATE_DONE
-    result.output_dir = str(output_dir / stem)
+    result.output_dir = str(output_dir / out_stem)
     result.markdown_path = str(md_path)
     if started is not None:
         result.elapsed = round(time.monotonic() - started, 2)
     if obsidian is not None:
-        copy_to_obsidian(md_path, stem, obsidian)
+        copy_to_obsidian(md_path, out_stem, obsidian)
     return result
 
 
@@ -965,6 +1048,7 @@ class _Job:
     api: str
     is_url: bool
     result: ParseResult
+    out_stem: str = ""
     data_id: str = ""
     file_name: str = ""
     poll_kind: str = ""        # "agent" | "task" | "batch"
@@ -979,19 +1063,21 @@ class _Job:
 def _plan_jobs(sources, opts, *, token, output_dir, api, resume, batch_mode=False) -> list:
     """Resolve each source's backend and short-circuit already-parsed inputs."""
     jobs = []
+    out_stems = unique_out_stems(sources)
     for idx, src in enumerate(sources):
         stem = safe_stem(src)
+        out_stem = out_stems[idx]
         res = ParseResult(name=stem, source=src, modality=detect_modality(src))
         url = is_url(src)
         job = _Job(
-            source=src, stem=stem, api="agent", is_url=url, result=res,
+            source=src, stem=stem, out_stem=out_stem, api="agent", is_url=url, result=res,
             file_name=(safe_stem(src) if url else Path(src).name),
             data_id=f"{safe_data_id(stem)}-{idx}",
         )
-        if resume and (output_dir / stem / f"{stem}.md").exists():
+        if resume and (output_dir / out_stem / f"{out_stem}.md").exists():
             res.state = "skipped"
-            res.output_dir = str(output_dir / stem)
-            res.markdown_path = str(output_dir / stem / f"{stem}.md")
+            res.output_dir = str(output_dir / out_stem)
+            res.markdown_path = str(output_dir / out_stem / f"{out_stem}.md")
             job.finished = True
             jobs.append(job)
             continue
@@ -1021,16 +1107,17 @@ def _reserve_single(job, opts, token, timeout) -> list:
     """Submit one non-batch input; return upload work ``[(job, url)]`` (empty for URLs)."""
     src = job.source
     job.deadline = time.monotonic() + timeout
+    req_timeout = min(timeout, REQUEST_TIMEOUT_CAP)
     if job.api == "agent":
         if job.is_url:
             data = _api_json("POST", f"{AGENT_API}/parse/url",
-                             payload={"url": src, **_agent_payload(opts)}, timeout=timeout)
+                             payload={"url": src, **_agent_payload(opts)}, timeout=req_timeout)
             job.poll_kind, job.poll_id = "agent", data["task_id"]
             job.result.task_id = data["task_id"]
             return []
         data = _api_json("POST", f"{AGENT_API}/parse/file",
                          payload={"file_name": Path(src).name, **_agent_payload(opts)},
-                         timeout=timeout)
+                         timeout=req_timeout)
         job.poll_kind, job.poll_id = "agent", data["task_id"]
         job.result.task_id = data["task_id"]
         return [(job, data["file_url"])]
@@ -1046,7 +1133,7 @@ def _reserve_single(job, opts, token, timeout) -> list:
     if opts.extra_formats:
         payload["extra_formats"] = list(opts.extra_formats)
     data = _api_json("POST", f"{STANDARD_API}/extract/task", token=token,
-                     payload=payload, timeout=timeout)
+                     payload=payload, timeout=req_timeout)
     job.poll_kind, job.poll_id = "task", data["task_id"]
     job.result.task_id = data["task_id"]
     return []
@@ -1071,7 +1158,7 @@ def _reserve_batch(batch_jobs, opts, token, timeout) -> list:
     if opts.extra_formats:
         payload["extra_formats"] = list(opts.extra_formats)
     data = _api_json("POST", f"{STANDARD_API}/file-urls/batch", token=token,
-                     payload=payload, timeout=timeout)
+                     payload=payload, timeout=min(timeout, REQUEST_TIMEOUT_CAP))
     batch_id = data["batch_id"]
     urls = data["file_urls"]
     if len(urls) != len(batch_jobs):
@@ -1098,7 +1185,7 @@ def _reserve_url_batch(batch_jobs, opts, token, timeout) -> list:
     files = [{"url": job.source, "data_id": job.data_id} for job in batch_jobs]
     payload = {"files": files, "model_version": model}
     data = _api_json("POST", f"{STANDARD_API}/extract/task/batch", token=token,
-                     payload=payload, timeout=timeout)
+                     payload=payload, timeout=min(timeout, REQUEST_TIMEOUT_CAP))
     batch_id = data["batch_id"]
     deadline = time.monotonic() + timeout
     for job in batch_jobs:
@@ -1195,22 +1282,22 @@ def _download_and_write(job, opts, output_dir, *, obsidian, want_markdown, timeo
     try:
         if job.download_kind == "md":
             markdown = _download(job.download_url, timeout=timeout).decode("utf-8", errors="replace")
-            md_path = write_markdown(job.stem, markdown, output_dir)
+            md_path = write_markdown(job.out_stem, markdown, output_dir)
             if want_markdown:
                 job.result.markdown = markdown
         else:
-            target_dir = output_dir / job.stem
+            target_dir = output_dir / job.out_stem
             target_dir.mkdir(parents=True, exist_ok=True)
             zip_path = target_dir / "._result.zip.partial"
             _download_to_path(job.download_url, zip_path, timeout=timeout)
-            md_path = extract_zip_path(job.stem, zip_path, output_dir)
+            md_path = extract_zip_path(job.out_stem, zip_path, output_dir)
             try:
                 zip_path.unlink()
             except OSError:
                 pass
             if want_markdown and md_path.exists():
                 job.result.markdown = md_path.read_text(encoding="utf-8", errors="replace")
-        _finalize(job.result, job.stem, output_dir, md_path, obsidian,
+        _finalize(job.result, job.out_stem, output_dir, md_path, obsidian,
                   started=job.started or None)
     except Exception as exc:  # noqa: BLE001 - isolate a single bad result
         job.result.state = STATE_FAILED
@@ -1219,19 +1306,34 @@ def _download_and_write(job, opts, output_dir, *, obsidian, want_markdown, timeo
 
 def _poll_until_done(active, opts, token, output_dir, *, poll_interval, obsidian,
                      want_markdown, download_pool, on_done, timeout=60):
-    """Decoupled poll loop: dispatch downloads as results complete; adaptive backoff."""
-    groups: dict = {}
+    """Decoupled poll loop: dispatch downloads as results complete.
+
+    Each batch/task ticket carries its OWN adaptive backoff and next-due time, so
+    one batch's cadence never resets or inflates another's. The per-request socket
+    timeout is capped (a stalled poll can't wedge the loop for the whole parse
+    budget — that lives in ``job.deadline``), and any unexpected error in one
+    ticket fails only that ticket instead of aborting the whole batch.
+    """
+    poll_req_timeout = min(timeout, REQUEST_TIMEOUT_CAP)
+    now0 = time.monotonic()
+    groups: dict = {}  # poll_id -> {kind, jobs, interval, due}
     for job in active:
-        groups.setdefault(job.poll_id, (job.poll_kind, []))[1].append(job)
+        st = groups.setdefault(
+            job.poll_id, {"kind": job.poll_kind, "jobs": [], "interval": poll_interval, "due": now0}
+        )
+        st["jobs"].append(job)
     dl_futures = []
-    interval = poll_interval
     while groups:
-        progressed = False
         now = time.monotonic()
-        for poll_id in list(groups):
-            kind, group = groups[poll_id]
+        due_ids = [pid for pid, st in groups.items() if st["due"] <= now]
+        if not due_ids:
+            time.sleep(max(0.0, min(st["due"] for st in groups.values()) - now))
+            continue
+        for poll_id in due_ids:
+            st = groups[poll_id]
+            group = st["jobs"]
             try:
-                completed, failed = _poll_group(kind, poll_id, group, token, timeout=timeout)
+                completed, failed = _poll_group(st["kind"], poll_id, group, token, timeout=poll_req_timeout)
             except MinerUError as exc:
                 completed = []
                 if _is_retryable_api_error(exc):
@@ -1240,6 +1342,11 @@ def _poll_until_done(active, opts, token, output_dir, *, poll_interval, obsidian
                     failed = list(group)
                     for job in failed:
                         job.result.error = str(exc)
+            except Exception as exc:  # noqa: BLE001 - a malformed ticket must not abort the batch
+                completed = []
+                failed = list(group)
+                for job in failed:
+                    job.result.error = f"poll error: {type(exc).__name__}: {exc}"
             for job in group:
                 if job in completed or job in failed:
                     continue
@@ -1249,7 +1356,6 @@ def _poll_until_done(active, opts, token, output_dir, *, poll_interval, obsidian
                     failed.append(job)
             for job in completed:
                 group.remove(job)
-                progressed = True
                 dl_futures.append(
                     download_pool.submit(
                         _download_and_write, job, opts, output_dir,
@@ -1258,14 +1364,13 @@ def _poll_until_done(active, opts, token, output_dir, *, poll_interval, obsidian
                 )
             for job in failed:
                 group.remove(job)
-                progressed = True
                 on_done(job)
+            progressed = bool(completed or failed)
             if not group:
                 del groups[poll_id]
-        if not groups:
-            break
-        time.sleep(interval)
-        interval = poll_interval if progressed else min(interval * 1.5, POLL_INTERVAL_CAP)
+            else:
+                st["interval"] = _next_poll_interval(st["interval"], progressed=progressed, base=poll_interval)
+                st["due"] = now + st["interval"]
     for future in dl_futures:
         future.result()  # _download_and_write swallows its own errors into the result
     # Notify every resolved job after downloads finish (the guard de-dupes earlier
@@ -1322,16 +1427,33 @@ def run_pipeline(sources, opts, *, token, output_dir, api, resume, poll_interval
     file_batches = _chunk_standard_jobs(std_files, opts, batch_size)
     url_batches = _chunk_standard_jobs(batchable_urls, opts, batch_size)
 
+    quota_tripped = threading.Event()
+
+    def _reserve_guarded(fn, *fn_args):
+        # Daily quota / retry-limit is terminal for the whole run; once tripped,
+        # skip the remaining submits instead of firing more doomed requests.
+        if quota_tripped.is_set():
+            raise MinerUError(
+                f"daily quota reached ({FREE_DAILY_PAGES} free pages/day) — submit skipped; retry tomorrow",
+                code=-60018,
+            )
+        try:
+            return fn(*fn_args)
+        except MinerUError as exc:
+            if exc.code in QUOTA_EXHAUSTED_CODES:
+                quota_tripped.set()
+            raise
+
     with ThreadPoolExecutor(max_workers=workers) as submit_pool, \
             ThreadPoolExecutor(max_workers=workers) as download_pool:
         # Phase 1 — reserve (parallel): one POST per single input / per batch.
         reserve = {}
         for job in singles:
-            reserve[submit_pool.submit(_reserve_single, job, opts, token, timeout)] = ("single", job)
+            reserve[submit_pool.submit(_reserve_guarded, _reserve_single, job, opts, token, timeout)] = ("single", job)
         for chunk in file_batches:
-            reserve[submit_pool.submit(_reserve_batch, chunk, opts, token, timeout)] = ("batch", chunk)
+            reserve[submit_pool.submit(_reserve_guarded, _reserve_batch, chunk, opts, token, timeout)] = ("batch", chunk)
         for chunk in url_batches:
-            reserve[submit_pool.submit(_reserve_url_batch, chunk, opts, token, timeout)] = ("batch", chunk)
+            reserve[submit_pool.submit(_reserve_guarded, _reserve_url_batch, chunk, opts, token, timeout)] = ("batch", chunk)
 
         uploads = []
         for future in as_completed(reserve):
@@ -1444,12 +1566,13 @@ def _merge_parts(part_results, stem: str, final_dir: Path) -> tuple:
     return merged, image_count
 
 
-def process_split(source, opts, *, token, output_dir, api, resume, timeout, cap, engine="cloud"):
+def process_split(source, opts, *, token, output_dir, api, resume, timeout, cap, engine="cloud", out_stem=None):
     """Split an oversized local PDF, parse each part, and merge. Returns a ParseResult,
     or None when no split is needed (caller falls back to process_one)."""
     if is_url(source) or suffix_of(source) != ".pdf":
         return None
     stem = safe_stem(source)
+    out_stem = out_stem or stem
     result = ParseResult(name=stem, source=source, modality="pdf")
     try:
         splitter = _load_splitter()
@@ -1461,11 +1584,11 @@ def process_split(source, opts, *, token, output_dir, api, resume, timeout, cap,
     if pages <= cap:
         return None  # fits — let normal processing handle it
 
-    final_dir = output_dir / stem
-    if resume and (final_dir / f"{stem}.md").exists():
+    final_dir = output_dir / out_stem
+    if resume and (final_dir / f"{out_stem}.md").exists():
         result.state = "skipped"
         result.output_dir = str(final_dir)
-        result.markdown_path = str(final_dir / f"{stem}.md")
+        result.markdown_path = str(final_dir / f"{out_stem}.md")
         return result
 
     started = time.monotonic()
@@ -1482,12 +1605,12 @@ def process_split(source, opts, *, token, output_dir, api, resume, timeout, cap,
             result.state = STATE_FAILED
             result.error = f"part failed: {failed[0].error}"
             return result
-        merged, n_images = _merge_parts(part_results, stem, final_dir)
+        merged, n_images = _merge_parts(part_results, out_stem, final_dir)
 
     result.state = STATE_DONE
     result.api = part_results[0].api if part_results else api
     result.output_dir = str(final_dir)
-    result.markdown_path = str(final_dir / f"{stem}.md")
+    result.markdown_path = str(final_dir / f"{out_stem}.md")
     result.markdown = merged
     result.elapsed = round(time.monotonic() - started, 2)
     result.task_id = f"split:{len(parts)}parts"
@@ -1495,19 +1618,31 @@ def process_split(source, opts, *, token, output_dir, api, resume, timeout, cap,
 
 
 def expand_inputs(raw_inputs) -> list:
-    """Expand directories into supported files; pass through URLs and files."""
-    expanded = []
+    """Expand directories into supported files; pass through URLs and files.
+
+    De-duplicates while preserving order: identical files (by resolved real path)
+    and repeated URLs collapse to one, so a file passed twice — or matched by both
+    an explicit path and a directory scan — is parsed once, not N times.
+    """
+    expanded, seen = [], set()
+
+    def _add(display, key):
+        if key not in seen:
+            seen.add(key)
+            expanded.append(display)
+
     for item in raw_inputs:
         if is_url(item):
-            expanded.append(item)
+            _add(item, item)
             continue
         path = Path(item)
         if path.is_dir():
             for child in sorted(path.iterdir()):
                 if child.is_file() and is_supported(child.name):
-                    expanded.append(str(child))
+                    _add(str(child), str(child.resolve()))
         else:
-            expanded.append(item)
+            key = str(path.resolve()) if path.exists() else str(path)
+            _add(item, key)
     return expanded
 
 
@@ -1793,17 +1928,21 @@ def main(argv=None) -> int:
             on_result=log_result,
         )
     else:
+        out_stem_of = dict(zip(sources, unique_out_stems(sources)))
+
         def run(source):
             res = None
             if args.split and args.engine != "local":
                 res = process_split(
                     source, opts, token=token, output_dir=output_dir, api=args.api,
                     resume=args.resume, timeout=args.timeout, cap=cap, engine=args.engine,
+                    out_stem=out_stem_of[source],
                 )
             if res is None:
                 res = process_one(
                     source, opts, token=token, output_dir=output_dir, api=args.api,
                     obsidian=None, resume=args.resume, timeout=args.timeout, engine=args.engine,
+                    out_stem=out_stem_of[source],
                 )
             log_result(res)
             return res
