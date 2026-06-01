@@ -26,7 +26,7 @@ each result's `sinks` array.
 | **Yuque 语雀** | `yuque` (`语雀`) | open API create doc | `YUQUE_TOKEN`, `YUQUE_NAMESPACE` | full (Markdown-native) | ⚠️ host publicly² |
 | **Coda** | `coda` | page canvas `format:markdown` | `CODA_API_TOKEN`, `CODA_DOC_ID?` | full (Markdown-native) | ⚠️ public URL² |
 | **Slack** | `slack` | external-upload `.md` file | `SLACK_BOT_TOKEN`, `SLACK_CHANNEL` | full (raw file) | ⚠️ not embedded |
-| **Feishu 飞书** | `feishu` (`lark`, `飞书`) | Drive `import_tasks` → Docx | `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_FOLDER_TOKEN?` | full (server-converted) | ⚠️ public URL² |
+| **Lark 飞书** | `feishu` (`lark`, `飞书`) | Drive `import_tasks` → Docx | `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_FOLDER_TOKEN?` | full (server-converted) | ⚠️ public URL² |
 | **Confluence** | `confluence` | `POST /wiki/api/v2/pages` (storage) | `CONFLUENCE_BASE_URL`, `CONFLUENCE_EMAIL`, `CONFLUENCE_API_TOKEN`, `CONFLUENCE_SPACE_ID` | MD→HTML | ⚠️ not attached |
 | **OneNote** | `onenote` | Graph `sections/{id}/pages` | `ONENOTE_TOKEN`³, `ONENOTE_SECTION_ID` | MD→HTML | ⚠️ remote only |
 | **TickTick 滴答** | `ticktick` (`dida`, `滴答清单`) | `POST /open/v1/task` | `TICKTICK_TOKEN`, `TICKTICK_PROJECT_ID?` | task note | ❌ unsupported |
@@ -41,7 +41,7 @@ Notes:
 2. Hosted services that ingest Markdown by value but have no first-class CLI asset upload — local images must be hosted at a public URL to render. The Markdown is delivered intact; image links that are already URLs work.
 3. **OneNote** `ONENOTE_TOKEN` is a Microsoft Graph access token (delegated, scope `Notes.Create`). Obtain it via the device-code OAuth flow; the sink itself stays non-interactive.
 4. **Airtable** is a database, not a document store — the doc is stored as one record (title + body fields). A good "save this doc as a row" target, not a document publisher.
-5. **WeCom** markdown messages are a limited subset (≤2048 bytes, no images/tables, not rendered in the workbench). Best as a notification/summary; for a full document deliver via Feishu/Notion and send the link.
+5. **WeCom** markdown messages are a limited subset (≤2048 bytes, no images/tables, not rendered in the workbench). Best as a notification/summary; for a full document deliver via Lark/Notion and send the link.
 6. **Optional-dependency sinks** — these two rely on a third-party library that the sink lazy-imports only when used, so the core and the other 15 sinks stay zero-dependency. If the library is absent, the sink returns a clear `pip install …` hint. They are implemented to the official specs but, being credential/desktop-gated, are best-effort until validated against live accounts.
 
 ## Optional-dependency sinks (`[roam]`, `[wps]`)

@@ -82,7 +82,7 @@ Legend: ✅ yes · ⚠️ partial/qualified · ❌ no. "Same backend" = calls th
 ### Where MinerU Skill genuinely wins
 
 - **Token-free, zero-install start** — the free Agent API needs no key, account, or `pip install` (the script's core is pure Python stdlib). Most cloud APIs (LlamaParse, Mathpix, Reducto, hosted Unstructured) require a key from page one.
-- **17 one-shot delivery sinks** (Obsidian, Logseq, SiYuan, Notion, Confluence, OneNote, Coda, Yuque, Feishu, Slack, DingTalk, WeCom, TickTick, Linear, Airtable, + Roam/WPS via optional extras) — *no* parsing engine or enterprise/RAG API here ships note/PKM delivery. (15 sinks are zero-dependency; Roam/WPS lazy-load one library.)
+- **17 one-shot delivery sinks** (Obsidian, Logseq, SiYuan, Notion, Confluence, OneNote, Coda, Yuque, Lark, Slack, DingTalk, WeCom, TickTick, Linear, Airtable, + Roam/WPS via optional extras) — *no* parsing engine or enterprise/RAG API here ships note/PKM delivery. (15 sinks are zero-dependency; Roam/WPS lazy-load one library.)
 - **Agent-native ergonomics**: `--stdout` Markdown + `--json` status, auto-routing Agent⇄Standard with size/page auto-escalation, `--resume` dedup, and parallel `--workers` batch, all in one ~54KB script.
 
 ### When to use something else (honest take)
@@ -231,12 +231,12 @@ python3 scripts/mineru.py paper.pdf --to obsidian --to notion --to slack
 | | Tools | `--to` |
 |---|---|---|
 | 📓 Notes (local) | Obsidian · Logseq · SiYuan | `obsidian` `logseq` `siyuan` |
-| 🌐 Docs / Wiki | Notion · Confluence · OneNote · Coda · Yuque 语雀 · Feishu 飞书 | `notion` `confluence` `onenote` `coda` `yuque` `feishu` |
+| 🌐 Docs / Wiki | Notion · Confluence · OneNote · Coda · Yuque 语雀 · Lark 飞书 | `notion` `confluence` `onenote` `coda` `yuque` `feishu` |
 | 💬 Chat / Tasks | Slack · DingTalk 钉钉 · WeCom 企业微信 · TickTick 滴答 · Linear · Airtable | `slack` `dingtalk` `wecom` `ticktick` `linear` `airtable` |
 | 🧩 Optional (extras) | Roam · WPS 金山文档 | `roam` `wps` |
 
 Each target uses its native Markdown path where one exists (Obsidian, Logseq,
-SiYuan, Linear, Yuque, Coda, Feishu, TickTick) or a faithful conversion where the
+SiYuan, Linear, Yuque, Coda, Lark, TickTick) or a faithful conversion where the
 tool requires it (Notion blocks; Confluence/OneNote HTML; Roam outline; WPS DOCX).
 **15 targets are zero-dependency**; Roam & WPS lazy-load a library only when used
 (`pip install "mineru-skill[roam]" "mineru-skill[wps]"`). Full per-target auth,
