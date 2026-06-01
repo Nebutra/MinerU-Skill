@@ -169,7 +169,7 @@ python3 scripts/mineru.py scan.pdf --ocr --lang ch --format docx --format latex
 | `--format` | `docx` · `html` · `latex`（可重复；强制精准解析 API） |
 | `--ocr` / `--lang` | 开启 OCR / 指定语言（默认 `ch`） |
 | `--pages` | 页码范围，如 `1-10` 或 `2,4-6` |
-| `--workers, -w` | 并发数（默认 4） |
+| `--workers, -w` | 并发提交/上传/下载槽位（默认 8） |
 | `--resume` | 跳过已处理输入 |
 | `--stdout` / `--json` | Markdown 打到 stdout / 机器状态打到 stdout |
 | `--to SINK` | 投递到内容工具（可重复）—— 见下 |

@@ -80,7 +80,7 @@ INPUT...          One or more files, a directory, or a URL
 --lang            OCR/document language (default: ch)
 --ocr             Enable OCR for scanned documents
 --pages           Page range, e.g. "1-10" or "2,4-6"
---workers, -w     Concurrent inputs (default: 4)
+--workers, -w     Concurrent submit/upload/download slots (default: 8)
 --resume          Skip inputs already parsed
 --stdout          Print Markdown to stdout
 --json            Print machine-readable status to stdout
