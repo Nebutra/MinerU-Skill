@@ -313,11 +313,15 @@ def test_next_poll_interval_backs_off_and_resets():
 # --------------------------------------------------------------------------- #
 # P6 — _finalize_zip_dir must pick deterministically when there is no full.md
 # --------------------------------------------------------------------------- #
-def test_finalize_zip_dir_prefers_largest_md_when_no_full_md(tmp_path):
+@pytest.mark.parametrize("big_name,small_name", [("z.md", "a.md"), ("a.md", "z.md")])
+def test_finalize_zip_dir_prefers_largest_md_regardless_of_name_order(tmp_path, big_name, small_name):
+    # The largest *.md must win whether it sorts first OR last by name, so any
+    # filesystem glob-order baseline (next(iter(glob()))) fails at least one case —
+    # only true size-based selection passes both.
     d = tmp_path / "doc"
     d.mkdir()
-    (d / "a.md").write_text("x")              # small, sorts first by name
-    (d / "z.md").write_text("BIG CONTENT!!")  # large, sorts last by name
+    (d / small_name).write_text("x")
+    (d / big_name).write_text("BIG CONTENT!!")
     md = mineru._finalize_zip_dir(d, "doc")
     assert md == d / "doc.md"
     assert md.read_text() == "BIG CONTENT!!"
