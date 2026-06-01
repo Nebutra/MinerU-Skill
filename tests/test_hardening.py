@@ -17,6 +17,7 @@ the same in-memory ``Router`` used by tests/test_mineru.py — no network.
 
 import json
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
 
@@ -308,6 +309,58 @@ def test_next_poll_interval_backs_off_and_resets():
     assert mineru._next_poll_interval(2.0, progressed=True, base=2.0) == 2.0
     assert mineru._next_poll_interval(2.0, progressed=False, base=2.0) == 3.0
     assert mineru._next_poll_interval(100.0, progressed=False, base=2.0) == mineru.POLL_INTERVAL_CAP
+
+
+def test_poll_scheduler_isolates_backoff_across_batches(tmp_path, monkeypatch):
+    """Integration: one batch that keeps making progress holds the base cadence while
+    an unrelated stuck batch backs off independently. A shared/global interval (the
+    pre-fix design) would re-poll the stuck batch every base tick — flat gaps."""
+    clock = [0.0]
+    monkeypatch.setattr(mineru.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(mineru.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    monkeypatch.setattr(mineru, "_download_and_write", lambda *a, **k: None)
+
+    def mkjob(poll_id):
+        j = mineru._Job(source="s", stem="s", api="agent", is_url=True,
+                        result=mineru.ParseResult(name="s", source="s"))
+        j.poll_kind, j.poll_id, j.deadline, j.started = "agent", poll_id, 1e9, 0.0
+        return j
+
+    # Group "B": 3 jobs, completes one per poll (progresses every poll → stays at base).
+    # Group "A": 1 stuck job that only completes once B is fully drained (ends the loop).
+    b_jobs = [mkjob("B"), mkjob("B"), mkjob("B")]
+    a_job = mkjob("A")
+    active = b_jobs + [a_job]
+    calls = []  # (poll_id, time)
+
+    def fake_poll_group(kind, poll_id, group, token, *, timeout):
+        calls.append((poll_id, clock[0]))
+        if poll_id == "B":
+            return ([group[0]], []) if group else ([], [])
+        b_polls = sum(1 for pid, _ in calls if pid == "B")
+        return (list(group), []) if b_polls >= 3 else ([], [])
+
+    monkeypatch.setattr(mineru, "_poll_group", fake_poll_group)
+
+    with ThreadPoolExecutor(max_workers=1) as dl_pool:
+        mineru._poll_until_done(
+            active, mineru.ParseOptions(), None, tmp_path,
+            poll_interval=2.0, obsidian=None, want_markdown=False,
+            download_pool=dl_pool, on_done=lambda j: None, timeout=60,
+        )
+
+    a_times = [t for pid, t in calls if pid == "A"]
+    b_times = [t for pid, t in calls if pid == "B"]
+
+    def gaps(ts):
+        return [round(b - a, 6) for a, b in zip(ts, ts[1:])]
+
+    # B keeps making progress → its interval never backs off (gaps stay at the base).
+    assert gaps(b_times) == [2.0, 2.0]
+    # A is stuck → it backs off geometrically (×1.5), INDEPENDENT of B's resets.
+    assert gaps(a_times) == [3.0, 4.5]
+    # Strictly increasing proves no cross-batch reset coupling.
+    assert all(y > x for x, y in zip(gaps(a_times), gaps(a_times)[1:]))
 
 
 # --------------------------------------------------------------------------- #
