@@ -37,8 +37,10 @@ jobs:
       - name: Create skill package
         run: |
           mkdir -p dist
+          python3 scripts/build_skill_package.py --out dist/marketplace-skill
           zip -r dist/mineru-skill.zip \
             SKILL.md \
+            dist/marketplace-skill/ \
             skills/mineru/ \
             .claude-plugin/ \
             scripts/ \

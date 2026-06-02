@@ -49,6 +49,8 @@ jobs:
         uses: astral-sh/setup-uv@v5
       - name: Smoke test CLI via uv (PEP 723 inline script, zero-install)
         run: uv run --script scripts/mineru.py --version
+      - name: Build self-contained marketplace skill
+        run: python scripts/build_skill_package.py --out dist/marketplace-skill
 
   publish-clawhub:
     name: Publish to ClawHub (OpenClaw)
@@ -73,8 +75,9 @@ jobs:
           CLAWHUB_DISABLE_TELEMETRY: "1"
         if: ${{ env.CLAWHUB_TOKEN != '' }}
         run: |
+          python scripts/build_skill_package.py --out dist/marketplace-skill
           clawhub login --token "$CLAWHUB_TOKEN"
-          clawhub skill publish "$PWD/skills/mineru" \
+          clawhub skill publish "$PWD/dist/marketplace-skill" \
             --slug mineru-skill \
             --name "MinerU PDF Parser" \
             --version "${GITHUB_REF_NAME#v}" \
