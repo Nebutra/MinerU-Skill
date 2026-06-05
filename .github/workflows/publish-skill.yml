@@ -46,7 +46,7 @@ jobs:
       - name: Unit tests (offline, no network)
         run: python -m pytest -q
       - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
       - name: Smoke test CLI via uv (PEP 723 inline script, zero-install)
         run: uv run --script scripts/mineru.py --version
       - name: Build self-contained marketplace skill
