@@ -23,6 +23,6 @@ jobs:
       - name: Build package
         run: python -m build
       - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
       - name: uv zero-install run (PEP 723 inline metadata)
         run: uv run --script scripts/mineru.py --version
