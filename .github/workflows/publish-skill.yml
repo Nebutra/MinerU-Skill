@@ -33,7 +33,7 @@ jobs:
     name: Validate skill
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -57,7 +57,7 @@ jobs:
     needs: validate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       # Skips silently until CLAWHUB_TOKEN is added as a repository secret.
       - name: Install ClawHub CLI
         env:
