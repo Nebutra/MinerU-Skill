@@ -1618,7 +1618,7 @@ def process_split(source, opts, *, token, output_dir, api, resume, timeout, cap,
 
 
 def expand_inputs(raw_inputs) -> list:
-    """Expand directories into supported files; pass through URLs and files.
+    """Expand home paths and directories; pass through URLs and files.
 
     De-duplicates while preserving order: identical files (by resolved real path)
     and repeated URLs collapse to one, so a file passed twice — or matched by both
@@ -1635,6 +1635,7 @@ def expand_inputs(raw_inputs) -> list:
         if is_url(item):
             _add(item, item)
             continue
+        item = os.path.expanduser(item)
         path = Path(item)
         if path.is_dir():
             for child in sorted(path.iterdir()):

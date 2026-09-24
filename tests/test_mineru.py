@@ -300,6 +300,27 @@ def test_copy_to_obsidian_copies_md_and_images(tmp_path):
 # --------------------------------------------------------------------------- #
 # expand_inputs
 # --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("source", ["~/papers/demo.pdf", "~/papers"])
+def test_expand_inputs_expands_home_and_dedupes(source, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    papers = tmp_path / "papers"
+    papers.mkdir()
+    pdf = papers / "demo.pdf"
+    pdf.write_bytes(b"x")
+    (papers / "ignored.txt").write_text("ignored", encoding="utf-8")
+
+    assert [Path(p) for p in mineru.expand_inputs([source, str(pdf)])] == [pdf]
+
+
+def test_expand_inputs_preserves_relative_paths_and_urls(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    Path("demo.pdf").write_bytes(b"x")
+    sources = ["./demo.pdf", "https://example.com/~user/demo.pdf"]
+
+    assert mineru.expand_inputs(sources) == sources
+
+
 def test_expand_inputs_directory_filters_supported(tmp_path):
     (tmp_path / "a.pdf").write_bytes(b"x")
     (tmp_path / "b.docx").write_bytes(b"x")
